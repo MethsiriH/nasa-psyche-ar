@@ -15,5 +15,5 @@ export const defaultSceneConfig: SceneConfig = {
 };
 
 export const getArJsConfig = (config: SceneConfig = defaultSceneConfig) => {
-    return `sourceType: webcam; debugUIEnabled: false; detectionMode: ${config.detectionMode}; matrixCodeType: ${config.matrixCodeType};`;
+    return `sourceType: webcam; sourceWidth:1280; sourceHeight:960; displayWidth: 1280; displayHeight: 960; debugUIEnabled: false; detectionMode: ${config.detectionMode}; matrixCodeType: ${config.matrixCodeType};`;
 };
