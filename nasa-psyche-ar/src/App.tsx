@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+
+import initParry, { boxes_collide } from "../rust_engine/pkg/rust_engine";
 // @ts-ignore
 import init, { start_ar_session } from '../rust_engine/pkg/rust_engine';
 
@@ -35,10 +37,12 @@ const App = () => {
         if (gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') return;
 
         const rover = document.getElementById('rover') as any; // Using direct DOM for A-Frame speed
+		const asteroid = document.getElementById("asteroid") as any;
         if (!rover) return;
+		if (!asteroid) return;
 
         const currentPos = rover.getAttribute('position');
-        const speed = 0.08;
+        const speed = 1;
 
         switch (direction) {
             case 'forward':
@@ -57,6 +61,23 @@ const App = () => {
 
         // Temporary simple movement - Logic Team will replace with mesh collision
         rover.setAttribute('position', currentPos);
+		
+
+		if (rover && asteroid) {
+			const rp = rover.getAttribute("position");
+			const ap = asteroid.getAttribute("position");
+
+			const collide = boxes_collide(
+				rp.x, rp.y, rp.z, 0.24, 0.15, 0.4,
+				ap.x, ap.y, ap.z, 9.5, 5.31, 9  
+			);
+
+			if (collide) {
+				console.log("Collided!");
+				currentPos.z += speed;
+				rover.setAttribute('position', currentPos);
+			}
+		}
     };
 
     // Setup event listeners for AR target tracking
