@@ -19,3 +19,17 @@ pub async fn start_ar_session(mode: String) -> Result<(), JsValue> {
     
     Ok(())
 }
+
+#[wasm_bindgen]
+pub fn boxes_collide(
+    ax: f32, ay: f32, az: f32, ahx: f32, ahy: f32, ahz: f32,
+    bx: f32, by: f32, bz: f32, bhx: f32, bhy: f32, bhz: f32,
+) -> bool {
+    let a = Cuboid::new([ahx, ahy, ahz].into());
+    let b = Cuboid::new([bhx, bhy, bhz].into());
+
+    let a_iso = Isometry::translation(ax, ay, az);
+    let b_iso = Isometry::translation(bx, by, bz);
+
+    query::intersection_test(&a_iso, &a, &b_iso, &b).unwrap_or(false)
+}
