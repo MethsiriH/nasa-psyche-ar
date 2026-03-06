@@ -5,7 +5,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import MODE_CONFIG, { Difficulty } from './modeConfig';
 // @ts-ignore
-import init, { start_ar_session, load_collision_mesh, move_rover_on_asteroid, get_surface_point_in_direction } from '../rust_engine/pkg/rust_engine';
+import init, { load_collision_mesh, move_rover_on_asteroid, get_surface_point_in_direction } from '../rust_engine/pkg/rust_engine';
 
 /** Converts surface normal (nx, ny, nz) to A-Frame Euler rotation string for cylinder alignment. */
 const rotationFromNormal = (nx: number, ny: number, nz: number): string => {
@@ -46,13 +46,6 @@ const App = () => {
     const [energy, setEnergy] = useState(100);
     const [showDifficulty, setShowDifficulty] = useState(false);
     
-    // Centralized difficulty configuration placeholder.
-     
-    const difficultyConfig: Record<string, any> = {
-        easy: { spawnCount: 4, scoreMultiplier: 0.8 },
-        normal: { spawnCount: 6, scoreMultiplier: 1.0 },
-        hard: { spawnCount: 8, scoreMultiplier: 1.25 },
-    };
     const [scanPrompt, setScanPrompt] = useState(true);
     const [meshLoaded, setMeshLoaded] = useState(false);
     const [roverReady, setRoverReady] = useState(false);
@@ -101,12 +94,6 @@ const App = () => {
         } else if (mode === 'ar') {
             console.log("Starting AR MODE");
             setGameState('AR_MODE');
-            try {
-                await start_ar_session(mode);
-            } catch (e) {
-                console.error("Failed to start AR session", e);
-                // Continue anyway to show AR scene
-            }
         }
     };
 
@@ -590,7 +577,7 @@ const App = () => {
                     {/* AR Scene with Camera Access */}
                     <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0 }}>
                         <a-scene
-                            mindar-image="imageTargetSrc: https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind;"
+                            mindar-image="imageTargetSrc: ./markers/4x4_1000-0.mind; uiLoading: no; uiScanning: no; uiError: no;"
                             color-space="sRGB"
                             renderer="colorManagement: true"
                             vr-mode-ui="enabled: false"
@@ -610,10 +597,12 @@ const App = () => {
 
                                 {/* Rover on asteroid */}
                                 <a-entity id="rover" position="0 0.3 0" rotation="0 0 0">
-                                    <a-gltf-model 
-                                        src="./models/craft_racer.glb" 
-                                        scale="0.05 0.05 0.05"
-                                    ></a-gltf-model>
+                                    <a-box width="0.32" height="0.2" depth="0.26" color="#B8963E"></a-box>
+                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 -0.1"></a-cylinder>
+                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 0.1"></a-cylinder>
+                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 -0.1"></a-cylinder>
+                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 0.1"></a-cylinder>
+                                    <a-box width="0.16" height="0.06" depth="0.08" color="#606060" position="0 0.13 -0.03"></a-box>
                                 </a-entity>
                             </a-entity>
                         </a-scene>
@@ -622,7 +611,7 @@ const App = () => {
                     <div id="ui-overlay" style={{ display: 'block' }}>
                         {scanPrompt && (
                             <div id="scan-prompt">
-                                Point camera at AR marker
+                                Point camera at printed 4x4_1000-0-mind-target.png
                             </div>
                         )}
 
