@@ -347,14 +347,15 @@ const App = () => {
         dpadInputRef.current = [0, 0];
     }, []);
 
-    /** On game start: reset state and spawn waypoints (WEB_GAME only). */
+    /** On game start: reset state and spawn waypoints/samples/obstacles for gameplay modes. */
     useEffect(() => {
         if (gameState === 'WEB_GAME' || gameState === 'AR_MODE') {
             setRoverReady(false);
             setScore(0);
+            setSamplesCollected(0);
             prevCamUp.current = null;
-            if (meshLoaded && gameState === 'WEB_GAME') {
-                // spawn waypoints (existing) and samples/obstacles based on mode config
+            if (meshLoaded) {
+                // spawn waypoints and collectibles for both WEB_GAME and AR_MODE
                 const wps: { id: string; x: number; y: number; z: number; nx: number; ny: number; nz: number }[] = [];
                 WAYPOINT_DIRECTIONS.forEach(([dx, dy, dz], i) => {
                     try {
@@ -471,16 +472,23 @@ const App = () => {
         if (gameState === 'AR_MODE') {
             const arTarget = document.getElementById('ar-target');
             if (arTarget) {
-                arTarget.addEventListener('targetFound', () => {
+                const onFound = () => {
                     console.log("AR Marker found!");
                     setScanPrompt(false);
-                });
-                arTarget.addEventListener('targetLost', () => {
+                };
+                const onLost = () => {
                     console.log("AR Marker lost");
                     setScanPrompt(true);
-                });
+                };
+                arTarget.addEventListener('targetFound', onFound);
+                arTarget.addEventListener('targetLost', onLost);
+                return () => {
+                    arTarget.removeEventListener('targetFound', onFound);
+                    arTarget.removeEventListener('targetLost', onLost);
+                };
             }
         }
+        return () => {};
     }, [gameState]);
 
     return (
@@ -590,13 +598,44 @@ const App = () => {
                                 <a-entity position="0 0 0" rotation="0 0 0">
                                     <a-gltf-model 
                                         src="./models/AsteroidPsyche.glb" 
-                                        scale="0.5 0.5 0.5"
-                                        position="0 0 0"
+                                        scale="2.5 2.5 2.5"
+                                        position="-3.75 -2.2 3.22"
                                     ></a-gltf-model>
                                 </a-entity>
 
+                                {/* Gameplay entities in AR mode */}
+                                {waypoints.map((wp) => {
+                                    const h = 0.5;
+                                    const cx = 0.5 * wp.nx, cy = 0.5 * wp.ny, cz = 0.5 * wp.nz;
+                                    return (
+                                        <a-entity key={wp.id} position={`${wp.x} ${wp.y} ${wp.z}`}>
+                                            <a-sphere radius="0.04" color="#FFD700" material="transparent: true; opacity: 0.7" />
+                                            <a-cylinder
+                                                radius="0.015"
+                                                height={h}
+                                                color="#FFD700"
+                                                material="transparent: true; opacity: 0.6"
+                                                position={`${cx * 0.5} ${cy * 0.5} ${cz * 0.5}`}
+                                                rotation={rotationFromNormal(wp.nx, wp.ny, wp.nz)}
+                                            />
+                                        </a-entity>
+                                    );
+                                })}
+
+                                {samples.map(s => (
+                                    <a-entity key={s.id} position={`${s.x} ${s.y} ${s.z}`}>
+                                        <a-sphere radius="0.05" color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                    </a-entity>
+                                ))}
+
+                                {obstacles.map(o => (
+                                    <a-entity key={o.id} position={`${o.x} ${o.y} ${o.z}`}>
+                                        <a-sphere radius="0.06" color="#ff4d4d" material="transparent: true; opacity: 0.95" />
+                                    </a-entity>
+                                ))}
+
                                 {/* Rover on asteroid */}
-                                <a-entity id="rover" position="0 0.3 0" rotation="0 0 0">
+                                <a-entity id="rover" position="0 0 3.3" rotation="0 0 0">
                                     <a-box width="0.32" height="0.2" depth="0.26" color="#B8963E"></a-box>
                                     <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 -0.1"></a-cylinder>
                                     <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 0.1"></a-cylinder>
