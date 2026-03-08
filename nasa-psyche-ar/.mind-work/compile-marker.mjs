@@ -8,23 +8,31 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
 
-const inputSvgPath = path.join(repoRoot, 'public', 'markers', '4x4_1000-0-mind-target.png');
 const outputDir = path.join(repoRoot, 'public', 'markers');
 const outputMindPath = path.join(outputDir, '4x4_1000-0.mind');
+const inputPngPaths = Array.from({ length: 6 }, (_, i) =>
+  path.join(outputDir, `4x4_1000-${i}-mind-target.png`)
+);
 
-if (!fs.existsSync(inputSvgPath)) {
-  throw new Error(`Input marker not found: ${inputSvgPath}`);
+for (const p of inputPngPaths) {
+  if (!fs.existsSync(p)) {
+    throw new Error(`Input marker not found: ${p}`);
+  }
 }
 
 if (!fs.existsSync(outputDir)) {
   fs.mkdirSync(outputDir, { recursive: true });
 }
 
-console.log(`Compiling MindAR target from: ${inputSvgPath}`);
-const image = await loadImage(inputSvgPath);
+console.log(`Compiling MindAR targets from:`);
+for (const p of inputPngPaths) console.log(` - ${p}`);
+const images = [];
+for (const p of inputPngPaths) {
+  images.push(await loadImage(p));
+}
 const compiler = new OfflineCompiler();
 
-await compiler.compileImageTargets([image], (percent) => {
+await compiler.compileImageTargets(images, (percent) => {
   console.log(`Progress: ${Math.round(percent)}%`);
 });
 

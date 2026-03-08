@@ -26,6 +26,23 @@ const WAYPOINT_DIRECTIONS: [number, number, number][] = [
     [0.707, 0, 0.707], [-0.707, 0.2, 0.707], [0, 0.707, 0.707], [0, -0.707, 0.707],
     [0.707, 0.707, 0], [-0.707, 0.5, -0.5], [0, 0, -1], [0.5, -0.707, -0.5],
 ];
+const AR_TARGET_COUNT = 4;
+const COLLISION_OFFSET = { x: -3.75, y: -2.2, z: 3.22 };
+const AR_WORLD_ROTATION = "0 180 0";
+// Printed marker is 3cm x 3cm; use conservative scale/offset and stronger smoothing.
+// Upright phone + object on flat surface: push world into marker and recenter around print.
+const AR_GLOBAL_OFFSET = { x: -0.62, y: -0.46, z: -0.72 };
+const AR_ASTEROID_SCALE = "1.2 1.2 1.2";
+/**
+ * Marker-to-model calibration offsets derived from user-measured distances on the asteroid.
+ * Coordinates are in model space units, with marker 0 as reference.
+ */
+const AR_MARKER_MODEL_OFFSETS: Record<number, { x: number; y: number; z: number }> = {
+    0: { x: 0, y: 0, z: 0 },
+    1: { x: -1.075622656483844, y: 0, z: 1.2006581115615877 },
+    2: { x: -2.2640675995770843, y: 0, z: -0.5862147482793422 },
+    3: { x: -0.9804085864844958, y: 0, z: -1.1863051898847403 },
+};
 
 const App = () => {
     const [gameState, setGameState] = useState('MENU');
@@ -47,6 +64,7 @@ const App = () => {
     const [showDifficulty, setShowDifficulty] = useState(false);
     
     const [scanPrompt, setScanPrompt] = useState(true);
+    const [activeArTarget, setActiveArTarget] = useState(0);
     const [meshLoaded, setMeshLoaded] = useState(false);
     const [roverReady, setRoverReady] = useState(false);
     const [waypoints, setWaypoints] = useState<{ id: string; x: number; y: number; z: number; nx: number; ny: number; nz: number }[]>([]);
@@ -93,6 +111,7 @@ const App = () => {
             setGameState('WEB_GAME');
         } else if (mode === 'ar') {
             console.log("Starting AR MODE");
+            setActiveArTarget(0);
             setGameState('AR_MODE');
         }
     };
@@ -133,7 +152,8 @@ const App = () => {
         if (gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') return;
 
         const THREE = (window as any).THREE;
-        const rover = document.getElementById('rover') as any;
+        const roverId = gameState === 'AR_MODE' ? `rover-${activeArTarget}` : 'rover';
+        const rover = document.getElementById(roverId) as any;
         if (!THREE || !rover) return;
 
         const currentPos = rover.getAttribute('position');
@@ -184,7 +204,7 @@ const App = () => {
         } catch (e) {
             console.error("Movement error:", e);
         }
-    }, [gameState]);
+    }, [gameState, activeArTarget]);
 
     /**
      * Global keyboard handlers
@@ -408,7 +428,8 @@ const App = () => {
         }
 
         const initRover = () => {
-            const rover = document.getElementById('rover') as any;
+            const roverId = gameState === 'AR_MODE' ? `rover-${activeArTarget}` : 'rover';
+            const rover = document.getElementById(roverId) as any;
             if (!rover) return;
 
             try {
@@ -465,28 +486,41 @@ const App = () => {
             }
             keysHeld.current.clear();
         };
-    }, [gameState, meshLoaded, movementLoop]);
+    }, [gameState, meshLoaded, movementLoop, activeArTarget]);
 
     /** AR mode: show/hide scan prompt based on marker visibility. */
     useEffect(() => {
         if (gameState === 'AR_MODE') {
-            const arTarget = document.getElementById('ar-target');
-            if (arTarget) {
+            const cleanups: Array<() => void> = [];
+            const targets: HTMLElement[] = [];
+
+            for (let i = 0; i < AR_TARGET_COUNT; i++) {
+                const target = document.getElementById(`ar-target-${i}`);
+                if (!target) continue;
+                targets.push(target);
+
                 const onFound = () => {
-                    console.log("AR Marker found!");
+                    console.log(`AR Marker ${i} found`);
+                    setActiveArTarget(i);
                     setScanPrompt(false);
                 };
                 const onLost = () => {
-                    console.log("AR Marker lost");
-                    setScanPrompt(true);
+                    console.log(`AR Marker ${i} lost`);
+                    window.setTimeout(() => {
+                        const anyVisible = targets.some((t: any) => !!t?.object3D?.visible);
+                        if (!anyVisible) setScanPrompt(true);
+                    }, 120);
                 };
-                arTarget.addEventListener('targetFound', onFound);
-                arTarget.addEventListener('targetLost', onLost);
-                return () => {
-                    arTarget.removeEventListener('targetFound', onFound);
-                    arTarget.removeEventListener('targetLost', onLost);
-                };
+
+                target.addEventListener('targetFound', onFound);
+                target.addEventListener('targetLost', onLost);
+                cleanups.push(() => {
+                    target.removeEventListener('targetFound', onFound);
+                    target.removeEventListener('targetLost', onLost);
+                });
             }
+
+            return () => cleanups.forEach((fn) => fn());
         }
         return () => {};
     }, [gameState]);
@@ -585,72 +619,89 @@ const App = () => {
                     {/* AR Scene with Camera Access */}
                     <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0 }}>
                         <a-scene
-                            mindar-image="imageTargetSrc: ./markers/4x4_1000-0.mind; uiLoading: no; uiScanning: no; uiError: no;"
+                            mindar-image="imageTargetSrc: ./markers/4x4_1000-0.mind; uiLoading: no; uiScanning: no; uiError: no; maxTrack: 1; warmupTolerance: 12; missTolerance: 12; filterMinCF: 0.0001; filterBeta: 0.0001;"
                             color-space="sRGB"
                             renderer="colorManagement: true"
                             vr-mode-ui="enabled: false"
                             device-orientation-permission-ui="enabled: false"
                         >
                             <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-
-                            <a-entity id="ar-target" mindar-image-target="targetIndex: 0">
-                                {/* Asteroid - scaled for AR marker */}
-                                <a-entity position="0 0 0" rotation="0 0 0">
-                                    <a-gltf-model 
-                                        src="./models/AsteroidPsyche.glb" 
-                                        scale="2.5 2.5 2.5"
-                                        position="-3.75 -2.2 3.22"
-                                    ></a-gltf-model>
-                                </a-entity>
-
-                                {/* Gameplay entities in AR mode */}
-                                {waypoints.map((wp) => {
-                                    const h = 0.5;
-                                    const cx = 0.5 * wp.nx, cy = 0.5 * wp.ny, cz = 0.5 * wp.nz;
-                                    return (
-                                        <a-entity key={wp.id} position={`${wp.x} ${wp.y} ${wp.z}`}>
-                                            <a-sphere radius="0.04" color="#FFD700" material="transparent: true; opacity: 0.7" />
-                                            <a-cylinder
-                                                radius="0.015"
-                                                height={h}
-                                                color="#FFD700"
-                                                material="transparent: true; opacity: 0.6"
-                                                position={`${cx * 0.5} ${cy * 0.5} ${cz * 0.5}`}
-                                                rotation={rotationFromNormal(wp.nx, wp.ny, wp.nz)}
-                                            />
+                            {Array.from({ length: AR_TARGET_COUNT }, (_, idx) => (
+                                <a-entity
+                                    key={`ar-target-${idx}`}
+                                    id={`ar-target-${idx}`}
+                                    mindar-image-target={`targetIndex: ${idx}`}
+                                    visible={activeArTarget === idx ? "true" : "false"}
+                                >
+                                    {/* Re-center gameplay world on marker to keep model in frame. */}
+                                    <a-entity
+                                        position={`${
+                                            -COLLISION_OFFSET.x - (AR_MARKER_MODEL_OFFSETS[idx]?.x ?? 0) + AR_GLOBAL_OFFSET.x
+                                        } ${
+                                            -COLLISION_OFFSET.y - (AR_MARKER_MODEL_OFFSETS[idx]?.y ?? 0) + AR_GLOBAL_OFFSET.y
+                                        } ${
+                                            -COLLISION_OFFSET.z - (AR_MARKER_MODEL_OFFSETS[idx]?.z ?? 0) + AR_GLOBAL_OFFSET.z
+                                        }`}
+                                        rotation={AR_WORLD_ROTATION}
+                                    >
+                                        <a-entity position="0 0 0" rotation="0 0 0">
+                                            <a-gltf-model
+                                                src="./models/AsteroidPsyche.glb"
+                                                scale={AR_ASTEROID_SCALE}
+                                                position={`${COLLISION_OFFSET.x} ${COLLISION_OFFSET.y} ${COLLISION_OFFSET.z}`}
+                                            ></a-gltf-model>
                                         </a-entity>
-                                    );
-                                })}
 
-                                {samples.map(s => (
-                                    <a-entity key={s.id} position={`${s.x} ${s.y} ${s.z}`}>
-                                        <a-sphere radius="0.05" color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                        {/* Gameplay entities in AR mode */}
+                                        {waypoints.map((wp) => {
+                                            const h = 0.5;
+                                            const cx = 0.5 * wp.nx, cy = 0.5 * wp.ny, cz = 0.5 * wp.nz;
+                                            return (
+                                                <a-entity key={`${idx}-${wp.id}`} position={`${wp.x} ${wp.y} ${wp.z}`}>
+                                                    <a-sphere radius="0.04" color="#FFD700" material="transparent: true; opacity: 0.7" />
+                                                    <a-cylinder
+                                                        radius="0.015"
+                                                        height={h}
+                                                        color="#FFD700"
+                                                        material="transparent: true; opacity: 0.6"
+                                                        position={`${cx * 0.5} ${cy * 0.5} ${cz * 0.5}`}
+                                                        rotation={rotationFromNormal(wp.nx, wp.ny, wp.nz)}
+                                                    />
+                                                </a-entity>
+                                            );
+                                        })}
+
+                                        {samples.map(s => (
+                                            <a-entity key={`${idx}-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
+                                                <a-sphere radius="0.05" color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                            </a-entity>
+                                        ))}
+
+                                        {obstacles.map(o => (
+                                            <a-entity key={`${idx}-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
+                                                <a-sphere radius="0.06" color="#ff4d4d" material="transparent: true; opacity: 0.95" />
+                                            </a-entity>
+                                        ))}
+
+                                        {/* Rover on asteroid */}
+                                        <a-entity id={`rover-${idx}`} position="0 0 3.3" rotation="0 0 0">
+                                            <a-box width="0.32" height="0.2" depth="0.26" color="#B8963E"></a-box>
+                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 -0.1"></a-cylinder>
+                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 0.1"></a-cylinder>
+                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 -0.1"></a-cylinder>
+                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 0.1"></a-cylinder>
+                                            <a-box width="0.16" height="0.06" depth="0.08" color="#606060" position="0 0.13 -0.03"></a-box>
+                                        </a-entity>
                                     </a-entity>
-                                ))}
-
-                                {obstacles.map(o => (
-                                    <a-entity key={o.id} position={`${o.x} ${o.y} ${o.z}`}>
-                                        <a-sphere radius="0.06" color="#ff4d4d" material="transparent: true; opacity: 0.95" />
-                                    </a-entity>
-                                ))}
-
-                                {/* Rover on asteroid */}
-                                <a-entity id="rover" position="0 0 3.3" rotation="0 0 0">
-                                    <a-box width="0.32" height="0.2" depth="0.26" color="#B8963E"></a-box>
-                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 -0.1"></a-cylinder>
-                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 0.1"></a-cylinder>
-                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 -0.1"></a-cylinder>
-                                    <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 0.1"></a-cylinder>
-                                    <a-box width="0.16" height="0.06" depth="0.08" color="#606060" position="0 0.13 -0.03"></a-box>
                                 </a-entity>
-                            </a-entity>
+                            ))}
                         </a-scene>
                     </div>
 
                     <div id="ui-overlay" style={{ display: 'block' }}>
                         {scanPrompt && (
                             <div id="scan-prompt">
-                                Point camera at printed 4x4_1000-0-mind-target.png
+                                Point camera at any printed marker: 4x4_1000-[0..3]-mind-target.png
                             </div>
                         )}
 
