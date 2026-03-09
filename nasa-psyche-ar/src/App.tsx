@@ -28,11 +28,14 @@ const WAYPOINT_DIRECTIONS: [number, number, number][] = [
 ];
 const AR_TARGET_COUNT = 4;
 const COLLISION_OFFSET = { x: -3.75, y: -2.2, z: 3.22 };
-const AR_WORLD_ROTATION = "0 180 0";
-// Printed marker is 3cm x 3cm; use conservative scale/offset and stronger smoothing.
-// Upright phone + object on flat surface: push world into marker and recenter around print.
-const AR_GLOBAL_OFFSET = { x: -0.62, y: -0.46, z: -0.72 };
-const AR_ASTEROID_SCALE = "1.2 1.2 1.2";
+const DEFAULT_AR_CALIBRATION = {
+    offsetX: -0.62,
+    offsetY: -0.46,
+    offsetZ: -0.72,
+    rotY: 180,
+    scale: 1.2,
+    depthScale: 1.0,
+};
 /**
  * Marker-to-model calibration offsets derived from user-measured distances on the asteroid.
  * Coordinates are in model space units, with marker 0 as reference.
@@ -63,8 +66,9 @@ const App = () => {
     const [energy, setEnergy] = useState(100);
     const [showDifficulty, setShowDifficulty] = useState(false);
     
-    const [scanPrompt, setScanPrompt] = useState(true);
     const [activeArTarget, setActiveArTarget] = useState(0);
+    const [showCalibrationPanel, setShowCalibrationPanel] = useState(false);
+    const [arCalibration, setArCalibration] = useState(DEFAULT_AR_CALIBRATION);
     const [meshLoaded, setMeshLoaded] = useState(false);
     const [roverReady, setRoverReady] = useState(false);
     const [waypoints, setWaypoints] = useState<{ id: string; x: number; y: number; z: number; nx: number; ny: number; nz: number }[]>([]);
@@ -74,6 +78,7 @@ const App = () => {
     const keysHeld = useRef(new Set<string>());
     const dpadInputRef = useRef<[number, number]>([0, 0]);
     const moveLoopId = useRef<number | null>(null);
+    const calibHoldTimerRef = useRef<number | null>(null);
     const lastMoveTime = useRef(0);
     const prevCamUp = useRef<any>(null);
     // Keyboard navigation
@@ -103,7 +108,63 @@ const App = () => {
         initRust();
     }, []);
 
-    const handleStart = async (mode: string, chosenDifficulty?: 'easy' | 'normal' | 'hard') => {
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem('psyche-ar-calibration');
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            setArCalibration(prev => ({
+                ...prev,
+                ...parsed,
+            }));
+        } catch (_) {
+            // Ignore malformed calibration payload.
+        }
+    }, []);
+
+    const saveCalibration = useCallback(() => {
+        localStorage.setItem('psyche-ar-calibration', JSON.stringify(arCalibration));
+    }, [arCalibration]);
+
+    const resetCalibration = useCallback(() => {
+        setArCalibration(DEFAULT_AR_CALIBRATION);
+        localStorage.removeItem('psyche-ar-calibration');
+    }, []);
+
+    const adjustCalibration = useCallback((key: keyof typeof DEFAULT_AR_CALIBRATION, delta: number) => {
+        setArCalibration(prev => {
+            let value = +(prev[key] + delta).toFixed(4);
+            if (key === 'scale') value = Math.max(0.5, Math.min(3.0, value));
+            if (key === 'depthScale') value = Math.max(0.6, Math.min(2.2, value));
+            if (key === 'offsetX' || key === 'offsetY' || key === 'offsetZ') value = Math.max(-2.0, Math.min(2.0, value));
+            if (key === 'rotY') value = ((value % 360) + 360) % 360;
+            const next = { ...prev, [key]: value };
+            return next;
+        });
+    }, []);
+
+    const stopCalibrationHold = useCallback(() => {
+        if (calibHoldTimerRef.current !== null) {
+            window.clearInterval(calibHoldTimerRef.current);
+            calibHoldTimerRef.current = null;
+        }
+    }, []);
+
+    const startCalibrationHold = useCallback((key: keyof typeof DEFAULT_AR_CALIBRATION, delta: number) => {
+        adjustCalibration(key, delta);
+        stopCalibrationHold();
+        calibHoldTimerRef.current = window.setInterval(() => adjustCalibration(key, delta), 90);
+    }, [adjustCalibration, stopCalibrationHold]);
+
+    useEffect(() => {
+        return () => stopCalibrationHold();
+    }, [stopCalibrationHold]);
+
+    const handleStart = async (
+        mode: string,
+        chosenDifficulty?: 'easy' | 'normal' | 'hard',
+        calibrationMode: boolean = false
+    ) => {
         if (chosenDifficulty) setDifficulty(chosenDifficulty);
 
         if (mode === 'web_game') {
@@ -112,6 +173,7 @@ const App = () => {
         } else if (mode === 'ar') {
             console.log("Starting AR MODE");
             setActiveArTarget(0);
+            setShowCalibrationPanel(calibrationMode);
             setGameState('AR_MODE');
         }
     };
@@ -492,24 +554,17 @@ const App = () => {
     useEffect(() => {
         if (gameState === 'AR_MODE') {
             const cleanups: Array<() => void> = [];
-            const targets: HTMLElement[] = [];
 
             for (let i = 0; i < AR_TARGET_COUNT; i++) {
                 const target = document.getElementById(`ar-target-${i}`);
                 if (!target) continue;
-                targets.push(target);
 
                 const onFound = () => {
                     console.log(`AR Marker ${i} found`);
                     setActiveArTarget(i);
-                    setScanPrompt(false);
                 };
                 const onLost = () => {
                     console.log(`AR Marker ${i} lost`);
-                    window.setTimeout(() => {
-                        const anyVisible = targets.some((t: any) => !!t?.object3D?.visible);
-                        if (!anyVisible) setScanPrompt(true);
-                    }, 120);
                 };
 
                 target.addEventListener('targetFound', onFound);
@@ -586,6 +641,7 @@ const App = () => {
                             {meshLoaded ? 'Launch Mission' : 'Loading...'}
                         </button>
                         <button id="start-button" ref={arBtnRef} onClick={() => handleStart('ar')}>AR Experience</button>
+                        <button onClick={() => handleStart('ar', undefined, true)}>AR Calibration</button>
                     </div>
                     <div className={`difficulty-overlay ${showDifficulty ? 'open' : 'closed'}`} onClick={() => setShowDifficulty(false)}>
                         <div className="difficulty-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-hidden={!showDifficulty}>
@@ -636,18 +692,19 @@ const App = () => {
                                     {/* Re-center gameplay world on marker to keep model in frame. */}
                                     <a-entity
                                         position={`${
-                                            -COLLISION_OFFSET.x - (AR_MARKER_MODEL_OFFSETS[idx]?.x ?? 0) + AR_GLOBAL_OFFSET.x
+                                            -COLLISION_OFFSET.x - (AR_MARKER_MODEL_OFFSETS[idx]?.x ?? 0) + arCalibration.offsetX
                                         } ${
-                                            -COLLISION_OFFSET.y - (AR_MARKER_MODEL_OFFSETS[idx]?.y ?? 0) + AR_GLOBAL_OFFSET.y
+                                            -COLLISION_OFFSET.y - (AR_MARKER_MODEL_OFFSETS[idx]?.y ?? 0) + arCalibration.offsetY
                                         } ${
-                                            -COLLISION_OFFSET.z - (AR_MARKER_MODEL_OFFSETS[idx]?.z ?? 0) + AR_GLOBAL_OFFSET.z
+                                            -COLLISION_OFFSET.z - (AR_MARKER_MODEL_OFFSETS[idx]?.z ?? 0) + arCalibration.offsetZ
                                         }`}
-                                        rotation={AR_WORLD_ROTATION}
+                                        rotation={`0 ${arCalibration.rotY} 0`}
+                                        scale={`${arCalibration.scale} ${arCalibration.scale} ${+(arCalibration.scale * arCalibration.depthScale).toFixed(4)}`}
                                     >
                                         <a-entity position="0 0 0" rotation="0 0 0">
                                             <a-gltf-model
                                                 src="./models/AsteroidPsyche.glb"
-                                                scale={AR_ASTEROID_SCALE}
+                                                scale="2.5 2.5 2.5"
                                                 position={`${COLLISION_OFFSET.x} ${COLLISION_OFFSET.y} ${COLLISION_OFFSET.z}`}
                                             ></a-gltf-model>
                                         </a-entity>
@@ -699,20 +756,96 @@ const App = () => {
                     </div>
 
                     <div id="ui-overlay" style={{ display: 'block' }}>
-                        {scanPrompt && (
-                            <div id="scan-prompt">
-                                Point camera at any printed marker: 4x4_1000-[0..3]-mind-target.png
+                        {/* Scan prompt intentionally hidden for clean AR calibration/play view. */}
+
+                        <button
+                            onClick={() => setShowCalibrationPanel(v => !v)}
+                            style={{
+                                position: 'fixed',
+                                left: 12,
+                                bottom: 12,
+                                zIndex: 30,
+                                border: 'none',
+                                borderRadius: 8,
+                                padding: '8px 10px',
+                                fontWeight: 700,
+                                background: 'rgba(0,0,0,0.75)',
+                                color: '#fff',
+                            }}
+                        >
+                            {showCalibrationPanel ? 'Hide Calibration' : 'Show Calibration'}
+                        </button>
+
+                        {showCalibrationPanel && (
+                            <div
+                                style={{
+                                    position: 'fixed',
+                                    left: 12,
+                                    bottom: 52,
+                                    zIndex: 30,
+                                    width: 280,
+                                    background: 'rgba(0,0,0,0.78)',
+                                    color: '#fff',
+                                    borderRadius: 10,
+                                    padding: 10,
+                                    display: 'grid',
+                                    gap: 8,
+                                    pointerEvents: 'auto',
+                                    fontSize: 12,
+                                }}
+                            >
+                                <div><b>Calibration</b> (active marker: {activeArTarget})</div>
+                                <div>x: {arCalibration.offsetX} | y: {arCalibration.offsetY} | z: {arCalibration.offsetZ}</div>
+                                <div>rotY: {arCalibration.rotY} | scale: {arCalibration.scale} | depth: {arCalibration.depthScale}</div>
+                                <div style={{ opacity: 0.85 }}>Hold any button to continuously adjust.</div>
+                                <div style={{ opacity: 0.85 }}>For this setup, Z- usually moves farther away; Z+ moves closer.</div>
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                    <button onPointerDown={() => startCalibrationHold('offsetX', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>X-</button>
+                                    <button onPointerDown={() => startCalibrationHold('offsetX', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>X+</button>
+                                    <button onPointerDown={() => startCalibrationHold('offsetY', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Y-</button>
+                                    <button onPointerDown={() => startCalibrationHold('offsetY', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Y+</button>
+                                    <button onPointerDown={() => startCalibrationHold('offsetZ', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Z-</button>
+                                    <button onPointerDown={() => startCalibrationHold('offsetZ', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Z+</button>
+                                </div>
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                    <button onPointerDown={() => startCalibrationHold('rotY', -5)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Rot-</button>
+                                    <button onPointerDown={() => startCalibrationHold('rotY', 5)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Rot+</button>
+                                    <button onPointerDown={() => startCalibrationHold('scale', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Scale-</button>
+                                    <button onPointerDown={() => startCalibrationHold('scale', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Scale+</button>
+                                    <button onPointerDown={() => startCalibrationHold('depthScale', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Depth-</button>
+                                    <button onPointerDown={() => startCalibrationHold('depthScale', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Depth+</button>
+                                </div>
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                    <button onClick={saveCalibration}>Save Local</button>
+                                    <button onClick={resetCalibration}>Reset</button>
+                                    <button
+                                        onClick={async () => {
+                                            const payload = JSON.stringify(arCalibration);
+                                            try {
+                                                await navigator.clipboard.writeText(payload);
+                                            } catch (_) {
+                                                // Ignore clipboard failures.
+                                            }
+                                        }}
+                                    >
+                                        Copy JSON
+                                    </button>
+                                </div>
                             </div>
                         )}
 
-                        <div id="score-display">
-                            SCORE <span id="score">{score}</span>
-                        </div>
+                        {!showCalibrationPanel && (
+                            <>
+                                <div id="score-display">
+                                    SCORE <span id="score">{score}</span>
+                                </div>
 
-                        <div className="mode-ui">
-                            <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${energy}%` }} /></div></div>
-                            <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
-                        </div>
+                                <div className="mode-ui">
+                                    <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${energy}%` }} /></div></div>
+                                    <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
+                                </div>
+                            </>
+                        )}
 
                         <div id="controls">
                             <div
