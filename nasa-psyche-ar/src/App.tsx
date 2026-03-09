@@ -28,6 +28,14 @@ const WAYPOINT_DIRECTIONS: [number, number, number][] = [
 ];
 const AR_TARGET_COUNT = 4;
 const COLLISION_OFFSET = { x: -3.75, y: -2.2, z: 3.22 };
+type ArCalibration = {
+    offsetX: number;
+    offsetY: number;
+    offsetZ: number;
+    rotY: number;
+    scale: number;
+    depthScale: number;
+};
 const DEFAULT_AR_CALIBRATION = {
     offsetX: -0.62,
     offsetY: -0.46,
@@ -35,6 +43,12 @@ const DEFAULT_AR_CALIBRATION = {
     rotY: 180,
     scale: 1.2,
     depthScale: 1.0,
+};
+const AR_MARKER_CALIBRATION_PRESETS: Record<number, ArCalibration> = {
+    0: { offsetX: -13.12, offsetY: -13.06, offsetZ: -20.92, rotY: 235, scale: 2.3, depthScale: 1 },
+    1: { offsetX: 0.03, offsetY: -7.21, offsetZ: -20.92, rotY: 110, scale: 2.3, depthScale: 1 },
+    2: { offsetX: -8.5, offsetY: -8.11, offsetZ: -25.22, rotY: 10, scale: 2.45, depthScale: 1 },
+    3: { offsetX: -7.17, offsetY: -5.66, offsetZ: -1.57, rotY: 330, scale: 1.1, depthScale: 0.6 },
 };
 /**
  * Marker-to-model calibration offsets derived from user-measured distances on the asteroid.
@@ -68,7 +82,7 @@ const App = () => {
     
     const [activeArTarget, setActiveArTarget] = useState(0);
     const [showCalibrationPanel, setShowCalibrationPanel] = useState(false);
-    const [arCalibration, setArCalibration] = useState(DEFAULT_AR_CALIBRATION);
+    const [arCalibrationByMarker, setArCalibrationByMarker] = useState<Record<number, ArCalibration>>(AR_MARKER_CALIBRATION_PRESETS);
     const [meshLoaded, setMeshLoaded] = useState(false);
     const [roverReady, setRoverReady] = useState(false);
     const [waypoints, setWaypoints] = useState<{ id: string; x: number; y: number; z: number; nx: number; ny: number; nz: number }[]>([]);
@@ -110,10 +124,10 @@ const App = () => {
 
     useEffect(() => {
         try {
-            const raw = localStorage.getItem('psyche-ar-calibration');
+            const raw = localStorage.getItem('psyche-ar-calibration-map');
             if (!raw) return;
             const parsed = JSON.parse(raw);
-            setArCalibration(prev => ({
+            setArCalibrationByMarker(prev => ({
                 ...prev,
                 ...parsed,
             }));
@@ -122,26 +136,34 @@ const App = () => {
         }
     }, []);
 
+    const activeCalibration: ArCalibration = arCalibrationByMarker[activeArTarget] ?? DEFAULT_AR_CALIBRATION;
+
     const saveCalibration = useCallback(() => {
-        localStorage.setItem('psyche-ar-calibration', JSON.stringify(arCalibration));
-    }, [arCalibration]);
+        localStorage.setItem('psyche-ar-calibration-map', JSON.stringify(arCalibrationByMarker));
+    }, [arCalibrationByMarker]);
 
     const resetCalibration = useCallback(() => {
-        setArCalibration(DEFAULT_AR_CALIBRATION);
-        localStorage.removeItem('psyche-ar-calibration');
+        setArCalibrationByMarker(AR_MARKER_CALIBRATION_PRESETS);
+        localStorage.removeItem('psyche-ar-calibration-map');
     }, []);
 
-    const adjustCalibration = useCallback((key: keyof typeof DEFAULT_AR_CALIBRATION, delta: number) => {
-        setArCalibration(prev => {
-            let value = +(prev[key] + delta).toFixed(4);
+    const adjustCalibration = useCallback((key: keyof ArCalibration, delta: number) => {
+        setArCalibrationByMarker(prev => {
+            const current = prev[activeArTarget] ?? DEFAULT_AR_CALIBRATION;
+            let value = +(current[key] + delta).toFixed(4);
             if (key === 'scale') value = Math.max(0.5, Math.min(3.0, value));
             if (key === 'depthScale') value = Math.max(0.6, Math.min(2.2, value));
-            if (key === 'offsetX' || key === 'offsetY' || key === 'offsetZ') value = Math.max(-2.0, Math.min(2.0, value));
+            if (key === 'offsetX' || key === 'offsetY' || key === 'offsetZ') value = Math.max(-40.0, Math.min(2.0, value));
             if (key === 'rotY') value = ((value % 360) + 360) % 360;
-            const next = { ...prev, [key]: value };
-            return next;
+            return {
+                ...prev,
+                [activeArTarget]: {
+                    ...current,
+                    [key]: value,
+                },
+            };
         });
-    }, []);
+    }, [activeArTarget]);
 
     const stopCalibrationHold = useCallback(() => {
         if (calibHoldTimerRef.current !== null) {
@@ -150,7 +172,7 @@ const App = () => {
         }
     }, []);
 
-    const startCalibrationHold = useCallback((key: keyof typeof DEFAULT_AR_CALIBRATION, delta: number) => {
+    const startCalibrationHold = useCallback((key: keyof ArCalibration, delta: number) => {
         adjustCalibration(key, delta);
         stopCalibrationHold();
         calibHoldTimerRef.current = window.setInterval(() => adjustCalibration(key, delta), 90);
@@ -692,14 +714,14 @@ const App = () => {
                                     {/* Re-center gameplay world on marker to keep model in frame. */}
                                     <a-entity
                                         position={`${
-                                            -COLLISION_OFFSET.x - (AR_MARKER_MODEL_OFFSETS[idx]?.x ?? 0) + arCalibration.offsetX
+                                            -COLLISION_OFFSET.x - (AR_MARKER_MODEL_OFFSETS[idx]?.x ?? 0) + activeCalibration.offsetX
                                         } ${
-                                            -COLLISION_OFFSET.y - (AR_MARKER_MODEL_OFFSETS[idx]?.y ?? 0) + arCalibration.offsetY
+                                            -COLLISION_OFFSET.y - (AR_MARKER_MODEL_OFFSETS[idx]?.y ?? 0) + activeCalibration.offsetY
                                         } ${
-                                            -COLLISION_OFFSET.z - (AR_MARKER_MODEL_OFFSETS[idx]?.z ?? 0) + arCalibration.offsetZ
+                                            -COLLISION_OFFSET.z - (AR_MARKER_MODEL_OFFSETS[idx]?.z ?? 0) + activeCalibration.offsetZ
                                         }`}
-                                        rotation={`0 ${arCalibration.rotY} 0`}
-                                        scale={`${arCalibration.scale} ${arCalibration.scale} ${+(arCalibration.scale * arCalibration.depthScale).toFixed(4)}`}
+                                        rotation={`0 ${activeCalibration.rotY} 0`}
+                                        scale={`${activeCalibration.scale} ${activeCalibration.scale} ${+(activeCalibration.scale * activeCalibration.depthScale).toFixed(4)}`}
                                     >
                                         <a-entity position="0 0 0" rotation="0 0 0">
                                             <a-gltf-model
@@ -795,8 +817,8 @@ const App = () => {
                                 }}
                             >
                                 <div><b>Calibration</b> (active marker: {activeArTarget})</div>
-                                <div>x: {arCalibration.offsetX} | y: {arCalibration.offsetY} | z: {arCalibration.offsetZ}</div>
-                                <div>rotY: {arCalibration.rotY} | scale: {arCalibration.scale} | depth: {arCalibration.depthScale}</div>
+                                <div>x: {activeCalibration.offsetX} | y: {activeCalibration.offsetY} | z: {activeCalibration.offsetZ}</div>
+                                <div>rotY: {activeCalibration.rotY} | scale: {activeCalibration.scale} | depth: {activeCalibration.depthScale}</div>
                                 <div style={{ opacity: 0.85 }}>Hold any button to continuously adjust.</div>
                                 <div style={{ opacity: 0.85 }}>For this setup, Z- usually moves farther away; Z+ moves closer.</div>
                                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -820,7 +842,11 @@ const App = () => {
                                     <button onClick={resetCalibration}>Reset</button>
                                     <button
                                         onClick={async () => {
-                                            const payload = JSON.stringify(arCalibration);
+                                            const payload = JSON.stringify({
+                                                activeMarker: activeArTarget,
+                                                calibration: activeCalibration,
+                                                allMarkers: arCalibrationByMarker,
+                                            });
                                             try {
                                                 await navigator.clipboard.writeText(payload);
                                             } catch (_) {
