@@ -52,72 +52,85 @@
   </a-scene>
 
   <script>
+    const statusDiv = document.getElementById('status');
+    const updateStatus = (msg) => { statusDiv.innerText = msg; };
     const sceneEl = document.querySelector('a-scene');
 
     const initLearner = () => {
+      let attempts = 0;
       // Poll until the AR engine context is completely ready
       const checkAndInit = () => {
-        if (!sceneEl.systems || !sceneEl.systems['arjs'] || !sceneEl.systems['arjs'].arToolkitContext) {
-          setTimeout(checkAndInit, 500);
-          return;
+        attempts++;
+        try {
+            const arjsSys = sceneEl.systems['arjs'];
+            const arSession = arjsSys ? arjsSys._arSession : null;
+            if (!arSession || !arSession.arContext) {
+                updateStatus("Waiting for AR engine... (" + attempts + ")");
+                setTimeout(checkAndInit, 500);
+                return;
+            }
+
+            const arToolkitContext = arSession.arContext;
+            const threeScene = sceneEl.object3D;
+
+            // 1. Define the 8 barcode markers (IDs 0 through 7)
+            const markersControlsParameters = [];
+            for (let i = 0; i < 8; i++) {
+              markersControlsParameters.push({ type: 'barcode', barcodeValue: i });
+            }
+
+            // 2. Initialize AR.js Marker Controls for each of the 8 barcodes
+            const subMarkersControls = [];
+            markersControlsParameters.forEach((markerParams) => {
+              const markerRoot = new THREE.Group();
+              threeScene.add(markerRoot);
+              const markerControls = new THREEx.ArMarkerControls(arToolkitContext, markerRoot, markerParams);
+              subMarkersControls.push(markerControls);
+            });
+
+            // 3. Initialize the Multi-Marker Area Learning Engine
+            if (typeof THREEx.ArMultiMakersLearning === 'undefined' && typeof THREEx.ArMultiMarkerLearning !== 'undefined') {
+                THREEx.ArMultiMakersLearning = THREEx.ArMultiMarkerLearning; // handle typo
+            }
+            if (typeof THREEx.ArMultiMakersLearning === 'undefined') {
+                updateStatus("Error: ArMultiMakersLearning is missing from AR.js build!");
+                return;
+            }
+            const multiMarkerLearning = new THREEx.ArMultiMakersLearning(arToolkitContext, subMarkersControls);
+
+            updateStatus("Ready. Point camera at the physical setup and click 'Start'.");
+
+            // 4. Handle 'Start Learning' Button
+            document.getElementById('start-learning').addEventListener('click', () => {
+              multiMarkerLearning.resetStats();
+              multiMarkerLearning.enabled = true;
+              
+              updateStatus("Learning... Pan the camera slowly to view multiple markers at once.");
+              document.getElementById('save-learning').disabled = false;
+            });
+
+            // 5. Handle 'Save Configuration' Button
+            document.getElementById('save-learning').addEventListener('click', () => {
+              multiMarkerLearning.enabled = false;
+              
+              // Generate the JSON string of the physical layout
+              const jsonString = multiMarkerLearning.toJSON();
+
+              // Save the layout to the browser's local storage so the game page can find it
+              localStorage.setItem('ARjsMultiMarkerFile', jsonString);
+
+              updateStatus("Area Saved! You can now open your main game page.");
+            });
+        } catch (e) {
+            updateStatus("Crash: " + e.message);
         }
-
-        const arToolkitContext = sceneEl.systems['arjs'].arToolkitContext;
-        const threeScene = sceneEl.object3D;
-
-        // 1. Define the 8 barcode markers (IDs 0 through 7)
-        const markersControlsParameters = [];
-        for (let i = 0; i < 8; i++) {
-          markersControlsParameters.push({ type: 'barcode', barcodeValue: i });
-        }
-
-        // 2. Initialize AR.js Marker Controls for each of the 8 barcodes
-        const subMarkersControls = [];
-        markersControlsParameters.forEach((markerParams) => {
-          const markerRoot = new THREE.Group();
-          threeScene.add(markerRoot);
-          const markerControls = new THREEx.ArMarkerControls(arToolkitContext, markerRoot, markerParams);
-          subMarkersControls.push(markerControls);
-        });
-
-        // 3. Initialize the Multi-Marker Area Learning Engine
-        // AR.js historically had a typo matching this object name: "ArMultiMakersLearning"
-        const multiMarkerLearning = new THREEx.ArMultiMakersLearning(arToolkitContext, subMarkersControls);
-
-        document.getElementById('status').innerText = "Ready. Point camera at the physical setup and click 'Start'.";
-
-        // 4. Handle 'Start Learning' Button
-        document.getElementById('start-learning').addEventListener('click', () => {
-          multiMarkerLearning.resetStats();
-          multiMarkerLearning.enabled = true;
-          
-          document.getElementById('status').innerText = "Learning... Pan the camera slowly to view multiple markers at once.";
-          document.getElementById('save-learning').disabled = false;
-        });
-
-        // 5. Handle 'Save Configuration' Button
-        document.getElementById('save-learning').addEventListener('click', () => {
-          multiMarkerLearning.enabled = false;
-          
-          // Generate the JSON string of the physical layout
-          const jsonString = multiMarkerLearning.toJSON();
-
-          // Save the layout to the browser's local storage so the game page can find it
-          localStorage.setItem('ARjsMultiMarkerFile', jsonString);
-
-          document.getElementById('status').innerText = "Area Saved! You can now open your main game page.";
-          console.log("Multi-Marker Map Saved:", jsonString);
-        });
       };
       
       checkAndInit();
     };
 
-    if (sceneEl.hasLoaded) {
-      initLearner();
-    } else {
-      sceneEl.addEventListener('loaded', initLearner);
-    }
+    // Immediately start polling, bypass a-scene loaded event flakiness
+    initLearner();
   </script>
 </body>
 </html>
