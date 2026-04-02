@@ -48,89 +48,102 @@
   </div>
 
   <a-scene embedded arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3; debugUIEnabled: false;">
+    <a-marker type="barcode" value="0" id="marker-0"></a-marker>
+    <a-marker type="barcode" value="1" id="marker-1"></a-marker>
+    <a-marker type="barcode" value="2" id="marker-2"></a-marker>
+    <a-marker type="barcode" value="3" id="marker-3"></a-marker>
+    <a-marker type="barcode" value="4" id="marker-4"></a-marker>
+    <a-marker type="barcode" value="5" id="marker-5"></a-marker>
+    <a-marker type="barcode" value="6" id="marker-6"></a-marker>
+    <a-marker type="barcode" value="7" id="marker-7"></a-marker>
     <a-entity camera></a-entity>
   </a-scene>
 
   <script>
     const statusDiv = document.getElementById('status');
     const updateStatus = (msg) => { statusDiv.innerText = msg; };
-    const sceneEl = document.querySelector('a-scene');
+    
+    let learningMode = false;
+    let loopId = null;
+    const THREE = window.THREE;
+    const knownMarkers = { 0: new THREE.Matrix4().identity() };
 
-    const initLearner = () => {
-      let attempts = 0;
-      // Poll until the AR engine context is completely ready
-      const checkAndInit = () => {
-        attempts++;
-        try {
-            const arjsSys = sceneEl.systems['arjs'];
-            const arSession = arjsSys ? arjsSys._arSession : null;
-            if (!arSession || !arSession.arContext) {
-                updateStatus("Waiting for AR engine... (" + attempts + ")");
-                setTimeout(checkAndInit, 500);
-                return;
+    updateStatus("Ready! Point camera at Marker 0 to start anchor, then hit 'Start Learning'.");
+
+    const pollTracking = () => {
+        if (!learningMode) return;
+        loopId = requestAnimationFrame(pollTracking);
+        
+        // Find which markers are currently tracked
+        const visibleMarkers = [];
+        for(let i=0; i<8; i++){
+            const el = document.getElementById('marker-'+i);
+            if(el && el.object3D.visible) {
+                visibleMarkers.push({ id: i, mat: el.object3D.matrixWorld.clone() });
             }
-
-            const arToolkitContext = arSession.arContext;
-            const threeScene = sceneEl.object3D;
-
-            // 1. Define the 8 barcode markers (IDs 0 through 7)
-            const markersControlsParameters = [];
-            for (let i = 0; i < 8; i++) {
-              markersControlsParameters.push({ type: 'barcode', barcodeValue: i });
-            }
-
-            // 2. Initialize AR.js Marker Controls for each of the 8 barcodes
-            const subMarkersControls = [];
-            markersControlsParameters.forEach((markerParams) => {
-              const markerRoot = new THREE.Group();
-              threeScene.add(markerRoot);
-              const markerControls = new THREEx.ArMarkerControls(arToolkitContext, markerRoot, markerParams);
-              subMarkersControls.push(markerControls);
-            });
-
-            // 3. Initialize the Multi-Marker Area Learning Engine
-            if (typeof THREEx.ArMultiMakersLearning === 'undefined' && typeof THREEx.ArMultiMarkerLearning !== 'undefined') {
-                THREEx.ArMultiMakersLearning = THREEx.ArMultiMarkerLearning; // handle typo
-            }
-            if (typeof THREEx.ArMultiMakersLearning === 'undefined') {
-                updateStatus("Error: ArMultiMakersLearning is missing from AR.js build!");
-                return;
-            }
-            const multiMarkerLearning = new THREEx.ArMultiMakersLearning(arToolkitContext, subMarkersControls);
-
-            updateStatus("Ready. Point camera at the physical setup and click 'Start'.");
-
-            // 4. Handle 'Start Learning' Button
-            document.getElementById('start-learning').addEventListener('click', () => {
-              multiMarkerLearning.resetStats();
-              multiMarkerLearning.enabled = true;
-              
-              updateStatus("Learning... Pan the camera slowly to view multiple markers at once.");
-              document.getElementById('save-learning').disabled = false;
-            });
-
-            // 5. Handle 'Save Configuration' Button
-            document.getElementById('save-learning').addEventListener('click', () => {
-              multiMarkerLearning.enabled = false;
-              
-              // Generate the JSON string of the physical layout
-              const jsonString = multiMarkerLearning.toJSON();
-
-              // Save the layout to the browser's local storage so the game page can find it
-              localStorage.setItem('ARjsMultiMarkerFile', jsonString);
-
-              updateStatus("Area Saved! You can now open your main game page.");
-            });
-        } catch (e) {
-            updateStatus("Crash: " + e.message);
         }
-      };
-      
-      checkAndInit();
+
+        if(visibleMarkers.length < 2 && Object.keys(knownMarkers).length === 1 && !visibleMarkers.find(v => v.id===0)) {
+           // We only know marker 0, and we either see 0 or 1 marker. Do nothing.
+           return; 
+        }
+
+        // Find a visible marker whose mapping to Marker 0 is ALREADY KNOWN
+        const knownVisible = visibleMarkers.find(m => knownMarkers[m.id] !== undefined);
+        if(knownVisible) {
+            // We know this marker's true offset relative to root (Marker 0)
+            const rootToKnown = knownMarkers[knownVisible.id]; 
+            
+            // Map any UNKNOWN visible markers to the Root
+            visibleMarkers.forEach(m => {
+                if (knownMarkers[m.id] === undefined) {
+                    // Calculate spatial offset from the Known marker to this Unknown marker
+                    const knownInverse = new THREE.Matrix4().copy(knownVisible.mat).invert();
+                    const offsetFromKnown = new THREE.Matrix4().copy(knownInverse).multiply(m.mat);
+                    
+                    // Root -> Unknown = (Root -> Known) * (Known -> Unknown)
+                    const rootToUnknown = new THREE.Matrix4().copy(rootToKnown).multiply(offsetFromKnown);
+                    knownMarkers[m.id] = rootToUnknown;
+                }
+            });
+        }
+        
+        const count = Object.keys(knownMarkers).length;
+        if (count === 8) {
+            updateStatus(`Success! Mapped all 8 markers! Hit Save Configuration.`);
+        } else {
+            updateStatus(`Learning... Mapped ${count} / 8 markers. Pan to view unknown markers alongside mapped ones.`);
+        }
     };
 
-    // Immediately start polling, bypass a-scene loaded event flakiness
-    initLearner();
+    document.getElementById('start-learning').addEventListener('click', () => {
+        learningMode = true;
+        document.getElementById('save-learning').disabled = false;
+        loopId = requestAnimationFrame(pollTracking);
+    });
+
+    document.getElementById('save-learning').addEventListener('click', () => {
+        learningMode = false;
+        if (loopId) cancelAnimationFrame(loopId);
+        
+        // Format as expected by AR.js Multi-Marker Area component
+        const subMarkersControls = [];
+        for (let i = 0; i < 8; i++) {
+            if (knownMarkers[i]) {
+                subMarkersControls.push({
+                    parameters: { type: 'barcode', barcodeValue: i },
+                    poseMatrix: Array.from(knownMarkers[i].elements)
+                });
+            }
+        }
+        
+        const areaConfig = { subMarkersControls };
+        const jsonString = JSON.stringify(areaConfig);
+        
+        localStorage.setItem('ARjsMultiMarkerFile', jsonString);
+        updateStatus("Area configuration SAVED to browser! You can now open your main game page.");
+        console.log("Multi-Marker Map Saved:", jsonString);
+    });
   </script>
 </body>
 </html>
