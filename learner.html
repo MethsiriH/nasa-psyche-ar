@@ -119,10 +119,12 @@
         }
         
         const count = Object.keys(knownMarkers).length;
+        const visibleIds = visibleMarkers.map(m=>m.id).join(', ');
+        
         if (count === 8) {
-            updateStatus(`Success! Mapped all 8 markers! Hit Save Configuration.`);
+            updateStatus(`Success! Mapped all 8 markers!\nSeeing: [${visibleIds}]`);
         } else {
-            updateStatus(`Learning... Mapped ${count} / 8 markers. Pan to view unknown markers alongside mapped ones.`);
+            updateStatus(`Mapped ${count} / 8 markers.\nSeeing: [${visibleIds}]\nLook at a MAPPED and UNMAPPED marker together.`);
         }
     };
 
