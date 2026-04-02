@@ -52,12 +52,16 @@
   </a-scene>
 
   <script>
-    // Wait for the A-Frame scene to load completely
-    document.querySelector('a-scene').addEventListener('loaded', function () {
-      
-      // Delay initialization slightly to ensure the camera context is fully ready
-      setTimeout(() => {
-        const sceneEl = document.querySelector('a-scene');
+    const sceneEl = document.querySelector('a-scene');
+
+    const initLearner = () => {
+      // Poll until the AR engine context is completely ready
+      const checkAndInit = () => {
+        if (!sceneEl.systems || !sceneEl.systems['arjs'] || !sceneEl.systems['arjs'].arToolkitContext) {
+          setTimeout(checkAndInit, 500);
+          return;
+        }
+
         const arToolkitContext = sceneEl.systems['arjs'].arToolkitContext;
         const threeScene = sceneEl.object3D;
 
@@ -77,6 +81,7 @@
         });
 
         // 3. Initialize the Multi-Marker Area Learning Engine
+        // AR.js historically had a typo matching this object name: "ArMultiMakersLearning"
         const multiMarkerLearning = new THREEx.ArMultiMakersLearning(arToolkitContext, subMarkersControls);
 
         document.getElementById('status').innerText = "Ready. Point camera at the physical setup and click 'Start'.";
@@ -103,8 +108,16 @@
           document.getElementById('status').innerText = "Area Saved! You can now open your main game page.";
           console.log("Multi-Marker Map Saved:", jsonString);
         });
-      }, 2000); 
-    });
+      };
+      
+      checkAndInit();
+    };
+
+    if (sceneEl.hasLoaded) {
+      initLearner();
+    } else {
+      sceneEl.addEventListener('loaded', initLearner);
+    }
   </script>
 </body>
 </html>
