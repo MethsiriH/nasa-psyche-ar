@@ -57,7 +57,7 @@
     <div id="status">Waiting for AR engine to load...</div>
   </div>
 
-  <a-scene embedded arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3; debugUIEnabled: false;">
+  <a-scene embedded arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63; debugUIEnabled: false;">
     <a-marker type="barcode" value="0" id="marker-0"></a-marker>
     <a-marker type="barcode" value="1" id="marker-1"></a-marker>
     <a-marker type="barcode" value="2" id="marker-2"></a-marker>
