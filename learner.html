@@ -76,7 +76,18 @@
     let learningMode = false;
     let loopId = null;
     const THREE = window.THREE;
-    const knownMarkers = { 0: new THREE.Matrix4().identity() };
+    const PREVIOUS_OFFSETS = {
+        0: { x: 0, y: 0, z: 0 },
+        2: { x: -1.075622656483844, y: 0, z: 1.2006581115615877 },
+        5: { x: -2.2640675995770843, y: 0, z: -0.5862147482793422 },
+        7: { x: -0.9804085864844958, y: 0, z: -1.1863051898847403 },
+    };
+
+    const knownMarkers = {};
+    for(const [idStr, pos] of Object.entries(PREVIOUS_OFFSETS)) {
+        // Pre-populate the spatial tracking array with your known constants
+        knownMarkers[parseInt(idStr)] = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z);
+    }
 
     updateStatus("Ready! Point camera at Marker 0 to start anchor, then hit 'Start Learning'.");
 
