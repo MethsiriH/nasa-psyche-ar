@@ -7,6 +7,14 @@ import MODE_CONFIG, { Difficulty } from './modeConfig';
 // @ts-ignore
 import init, { load_collision_mesh, move_rover_on_asteroid, get_surface_point_in_direction } from '../rust_engine/pkg/rust_engine';
 
+declare global {
+    namespace JSX {
+        interface IntrinsicElements {
+            'a-marker': any;
+        }
+    }
+}
+
 /** Converts surface normal (nx, ny, nz) to A-Frame Euler rotation string for cylinder alignment. */
 const rotationFromNormal = (nx: number, ny: number, nz: number): string => {
     const THREE = (window as any).THREE;
@@ -26,40 +34,8 @@ const WAYPOINT_DIRECTIONS: [number, number, number][] = [
     [0.707, 0, 0.707], [-0.707, 0.2, 0.707], [0, 0.707, 0.707], [0, -0.707, 0.707],
     [0.707, 0.707, 0], [-0.707, 0.5, -0.5], [0, 0, -1], [0.5, -0.707, -0.5],
 ];
-const AR_TARGET_COUNT = 4;
 const COLLISION_OFFSET = { x: -3.75, y: -2.2, z: 3.22 };
-type ArCalibration = {
-    offsetX: number;
-    offsetY: number;
-    offsetZ: number;
-    rotY: number;
-    scale: number;
-    depthScale: number;
-};
-const DEFAULT_AR_CALIBRATION = {
-    offsetX: -0.62,
-    offsetY: -0.46,
-    offsetZ: -0.72,
-    rotY: 180,
-    scale: 1.2,
-    depthScale: 1.0,
-};
-const AR_MARKER_CALIBRATION_PRESETS: Record<number, ArCalibration> = {
-    0: { offsetX: -13.12, offsetY: -13.06, offsetZ: -20.92, rotY: 235, scale: 2.3, depthScale: 1 },
-    1: { offsetX: 0.03, offsetY: -7.21, offsetZ: -20.92, rotY: 110, scale: 2.3, depthScale: 1 },
-    2: { offsetX: -8.5, offsetY: -8.11, offsetZ: -25.22, rotY: 10, scale: 2.45, depthScale: 1 },
-    3: { offsetX: -7.17, offsetY: -5.66, offsetZ: -1.57, rotY: 330, scale: 1.1, depthScale: 0.6 },
-};
-/**
- * Marker-to-model calibration offsets derived from user-measured distances on the asteroid.
- * Coordinates are in model space units, with marker 0 as reference.
- */
-const AR_MARKER_MODEL_OFFSETS: Record<number, { x: number; y: number; z: number }> = {
-    0: { x: 0, y: 0, z: 0 },
-    1: { x: -1.075622656483844, y: 0, z: 1.2006581115615877 },
-    2: { x: -2.2640675995770843, y: 0, z: -0.5862147482793422 },
-    3: { x: -0.9804085864844958, y: 0, z: -1.1863051898847403 },
-};
+
 
 const App = () => {
     const [gameState, setGameState] = useState('MENU');
@@ -80,10 +56,12 @@ const App = () => {
     const [energy, setEnergy] = useState(100);
     const [showDifficulty, setShowDifficulty] = useState(false);
     
-    const [activeArTarget, setActiveArTarget] = useState(0);
     const [showCalibrationPanel, setShowCalibrationPanel] = useState(false);
-    const [arCalibrationByMarker, setArCalibrationByMarker] = useState<Record<number, ArCalibration>>(AR_MARKER_CALIBRATION_PRESETS);
     const [meshLoaded, setMeshLoaded] = useState(false);
+    
+    // Global Area Calibration — scale derived from iPhone measurement (~37cm asteroid, ~16cm/AR-unit)
+    const [globalScale, setGlobalScale] = useState(2.2);
+    const [globalPos, setGlobalPos] = useState({ x: -1.13, y: 0.3, z: 0.1 });
     const [roverReady, setRoverReady] = useState(false);
     const [waypoints, setWaypoints] = useState<{ id: string; x: number; y: number; z: number; nx: number; ny: number; nz: number }[]>([]);
     const lastDirectionRef = useRef<[number, number]>([0, 1]);
@@ -92,7 +70,6 @@ const App = () => {
     const keysHeld = useRef(new Set<string>());
     const dpadInputRef = useRef<[number, number]>([0, 0]);
     const moveLoopId = useRef<number | null>(null);
-    const calibHoldTimerRef = useRef<number | null>(null);
     const lastMoveTime = useRef(0);
     const prevCamUp = useRef<any>(null);
     // Keyboard navigation
@@ -122,65 +99,9 @@ const App = () => {
         initRust();
     }, []);
 
-    useEffect(() => {
-        try {
-            const raw = localStorage.getItem('psyche-ar-calibration-map');
-            if (!raw) return;
-            const parsed = JSON.parse(raw);
-            setArCalibrationByMarker(prev => ({
-                ...prev,
-                ...parsed,
-            }));
-        } catch (_) {
-            // Ignore malformed calibration payload.
-        }
-    }, []);
 
-    const activeCalibration: ArCalibration = arCalibrationByMarker[activeArTarget] ?? DEFAULT_AR_CALIBRATION;
 
-    const saveCalibration = useCallback(() => {
-        localStorage.setItem('psyche-ar-calibration-map', JSON.stringify(arCalibrationByMarker));
-    }, [arCalibrationByMarker]);
 
-    const resetCalibration = useCallback(() => {
-        setArCalibrationByMarker(AR_MARKER_CALIBRATION_PRESETS);
-        localStorage.removeItem('psyche-ar-calibration-map');
-    }, []);
-
-    const adjustCalibration = useCallback((key: keyof ArCalibration, delta: number) => {
-        setArCalibrationByMarker(prev => {
-            const current = prev[activeArTarget] ?? DEFAULT_AR_CALIBRATION;
-            let value = +(current[key] + delta).toFixed(4);
-            if (key === 'scale') value = Math.max(0.5, Math.min(3.0, value));
-            if (key === 'depthScale') value = Math.max(0.6, Math.min(2.2, value));
-            if (key === 'offsetX' || key === 'offsetY' || key === 'offsetZ') value = Math.max(-40.0, Math.min(2.0, value));
-            if (key === 'rotY') value = ((value % 360) + 360) % 360;
-            return {
-                ...prev,
-                [activeArTarget]: {
-                    ...current,
-                    [key]: value,
-                },
-            };
-        });
-    }, [activeArTarget]);
-
-    const stopCalibrationHold = useCallback(() => {
-        if (calibHoldTimerRef.current !== null) {
-            window.clearInterval(calibHoldTimerRef.current);
-            calibHoldTimerRef.current = null;
-        }
-    }, []);
-
-    const startCalibrationHold = useCallback((key: keyof ArCalibration, delta: number) => {
-        adjustCalibration(key, delta);
-        stopCalibrationHold();
-        calibHoldTimerRef.current = window.setInterval(() => adjustCalibration(key, delta), 90);
-    }, [adjustCalibration, stopCalibrationHold]);
-
-    useEffect(() => {
-        return () => stopCalibrationHold();
-    }, [stopCalibrationHold]);
 
     const handleStart = async (
         mode: string,
@@ -194,7 +115,7 @@ const App = () => {
             setGameState('WEB_GAME');
         } else if (mode === 'ar') {
             console.log("Starting AR MODE");
-            setActiveArTarget(0);
+
             setShowCalibrationPanel(calibrationMode);
             setGameState('AR_MODE');
         }
@@ -236,8 +157,7 @@ const App = () => {
         if (gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') return;
 
         const THREE = (window as any).THREE;
-        const roverId = gameState === 'AR_MODE' ? `rover-${activeArTarget}` : 'rover';
-        const rover = document.getElementById(roverId) as any;
+        const rover = document.getElementById('rover') as any;
         if (!THREE || !rover) return;
 
         const currentPos = rover.getAttribute('position');
@@ -288,7 +208,7 @@ const App = () => {
         } catch (e) {
             console.error("Movement error:", e);
         }
-    }, [gameState, activeArTarget]);
+    }, [gameState]);
 
     /**
      * Global keyboard handlers
@@ -512,8 +432,7 @@ const App = () => {
         }
 
         const initRover = () => {
-            const roverId = gameState === 'AR_MODE' ? `rover-${activeArTarget}` : 'rover';
-            const rover = document.getElementById(roverId) as any;
+            const rover = document.getElementById('rover') as any;
             if (!rover) return;
 
             try {
@@ -570,36 +489,35 @@ const App = () => {
             }
             keysHeld.current.clear();
         };
-    }, [gameState, meshLoaded, movementLoop, activeArTarget]);
+    }, [gameState, meshLoaded, movementLoop]);
 
-    /** AR mode: show/hide scan prompt based on marker visibility. */
-    useEffect(() => {
-        if (gameState === 'AR_MODE') {
-            const cleanups: Array<() => void> = [];
+    // Central Raycaster logic for Step 4
+    const handleRaycastFire = useCallback((_e: React.PointerEvent) => {
+        if (gameState !== 'AR_MODE') return;
+        const THREE = (window as any).THREE;
+        const cam = document.querySelector('a-camera') as any;
+        const collisionViz = document.querySelector('.clickable-asteroid') as any;
+        if (!THREE || !cam?.object3D || !collisionViz?.object3D) return;
 
-            for (let i = 0; i < AR_TARGET_COUNT; i++) {
-                const target = document.getElementById(`ar-target-${i}`);
-                if (!target) continue;
-
-                const onFound = () => {
-                    console.log(`AR Marker ${i} found`);
-                    setActiveArTarget(i);
-                };
-                const onLost = () => {
-                    console.log(`AR Marker ${i} lost`);
-                };
-
-                target.addEventListener('targetFound', onFound);
-                target.addEventListener('targetLost', onLost);
-                cleanups.push(() => {
-                    target.removeEventListener('targetFound', onFound);
-                    target.removeEventListener('targetLost', onLost);
-                });
+        const pos = new THREE.Vector3();
+        cam.object3D.getWorldPosition(pos);
+        // Find direction center camera is pointing
+        const target = new THREE.Vector3(0, 0, -1).transformDirection(cam.object3D.matrixWorld).normalize(); 
+        
+        const raycaster = new THREE.Raycaster(pos, target);
+        let intersects: any[] = [];
+        collisionViz.object3D.traverse((child: any) => {
+            if (child.isMesh) {
+                const hits = raycaster.intersectObject(child, false);
+                if (hits.length > 0) intersects.push(...hits);
             }
-
-            return () => cleanups.forEach((fn) => fn());
+        });
+        
+        if (intersects.length > 0) {
+            console.log("HIT the asteroid at: ", intersects[0].point);
+            setScore(s => s + 50);
+            setEnergy(e => Math.max(0, e - 2));
         }
-        return () => {};
     }, [gameState]);
 
     return (
@@ -697,83 +615,78 @@ const App = () => {
                     {/* AR Scene with Camera Access */}
                     <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0 }}>
                         <a-scene
-                            mindar-image="imageTargetSrc: ./markers/4x4_1000-0.mind; uiLoading: no; uiScanning: no; uiError: no; maxTrack: 1; warmupTolerance: 12; missTolerance: 12; filterMinCF: 0.0001; filterBeta: 0.0001;"
+                            embedded 
+                            arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63;"
                             color-space="sRGB"
                             renderer="colorManagement: true"
                             vr-mode-ui="enabled: false"
                             device-orientation-permission-ui="enabled: false"
                         >
                             <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-                            {Array.from({ length: AR_TARGET_COUNT }, (_, idx) => (
+                            
+                            <a-marker type="area" url="./config.json">
                                 <a-entity
-                                    key={`ar-target-${idx}`}
-                                    id={`ar-target-${idx}`}
-                                    mindar-image-target={`targetIndex: ${idx}`}
-                                    visible={activeArTarget === idx ? "true" : "false"}
+                                    position={`${globalPos.x} ${globalPos.y} ${globalPos.z}`}
+                                    rotation={`0 0 0`}
+                                    scale={`${globalScale} ${globalScale} ${globalScale}`}
                                 >
-                                    {/* Re-center gameplay world on marker to keep model in frame. */}
-                                    <a-entity
-                                        position={`${
-                                            -COLLISION_OFFSET.x - (AR_MARKER_MODEL_OFFSETS[idx]?.x ?? 0) + activeCalibration.offsetX
-                                        } ${
-                                            -COLLISION_OFFSET.y - (AR_MARKER_MODEL_OFFSETS[idx]?.y ?? 0) + activeCalibration.offsetY
-                                        } ${
-                                            -COLLISION_OFFSET.z - (AR_MARKER_MODEL_OFFSETS[idx]?.z ?? 0) + activeCalibration.offsetZ
-                                        }`}
-                                        rotation={`0 ${activeCalibration.rotY} 0`}
-                                        scale={`${activeCalibration.scale} ${activeCalibration.scale} ${+(activeCalibration.scale * activeCalibration.depthScale).toFixed(4)}`}
-                                    >
-                                        <a-entity position="0 0 0" rotation="0 0 0">
-                                            <a-gltf-model
-                                                src="./models/AsteroidPsyche.glb"
-                                                scale="2.5 2.5 2.5"
-                                                position={`${COLLISION_OFFSET.x} ${COLLISION_OFFSET.y} ${COLLISION_OFFSET.z}`}
-                                            ></a-gltf-model>
-                                        </a-entity>
+                                    <a-entity position="0 0 0" rotation="0 0 0">
+                                        <a-gltf-model
+                                            src="./models/AsteroidPsyche.glb"
+                                            scale="2.5 2.5 2.5"
+                                            position={`${COLLISION_OFFSET.x} ${COLLISION_OFFSET.y} ${COLLISION_OFFSET.z}`}
+                                        ></a-gltf-model>
+                                        <a-gltf-model
+                                            class="clickable-asteroid"
+                                            src="./models/AsteroidPsyche_Collision.glb"
+                                            scale="2.5 2.5 2.5"
+                                            visible="false"
+                                            position={`${COLLISION_OFFSET.x} ${COLLISION_OFFSET.y} ${COLLISION_OFFSET.z}`}
+                                        ></a-gltf-model>
+                                    </a-entity>
 
-                                        {/* Gameplay entities in AR mode */}
-                                        {waypoints.map((wp) => {
-                                            const h = 0.5;
-                                            const cx = 0.5 * wp.nx, cy = 0.5 * wp.ny, cz = 0.5 * wp.nz;
-                                            return (
-                                                <a-entity key={`${idx}-${wp.id}`} position={`${wp.x} ${wp.y} ${wp.z}`}>
-                                                    <a-sphere radius="0.04" color="#FFD700" material="transparent: true; opacity: 0.7" />
-                                                    <a-cylinder
-                                                        radius="0.015"
-                                                        height={h}
-                                                        color="#FFD700"
-                                                        material="transparent: true; opacity: 0.6"
-                                                        position={`${cx * 0.5} ${cy * 0.5} ${cz * 0.5}`}
-                                                        rotation={rotationFromNormal(wp.nx, wp.ny, wp.nz)}
-                                                    />
-                                                </a-entity>
-                                            );
-                                        })}
-
-                                        {samples.map(s => (
-                                            <a-entity key={`${idx}-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
-                                                <a-sphere radius="0.05" color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                    {/* Gameplay entities in AR mode */}
+                                    {waypoints.map((wp) => {
+                                        const h = 0.5;
+                                        const cx = 0.5 * wp.nx, cy = 0.5 * wp.ny, cz = 0.5 * wp.nz;
+                                        return (
+                                            <a-entity key={`ar-${wp.id}`} position={`${wp.x} ${wp.y} ${wp.z}`}>
+                                                <a-sphere radius="0.04" color="#FFD700" material="transparent: true; opacity: 0.7" />
+                                                <a-cylinder
+                                                    radius="0.015"
+                                                    height={h}
+                                                    color="#FFD700"
+                                                    material="transparent: true; opacity: 0.6"
+                                                    position={`${cx * 0.5} ${cy * 0.5} ${cz * 0.5}`}
+                                                    rotation={rotationFromNormal(wp.nx, wp.ny, wp.nz)}
+                                                />
                                             </a-entity>
-                                        ))}
+                                        );
+                                    })}
 
-                                        {obstacles.map(o => (
-                                            <a-entity key={`${idx}-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
-                                                <a-sphere radius="0.06" color="#ff4d4d" material="transparent: true; opacity: 0.95" />
-                                            </a-entity>
-                                        ))}
-
-                                        {/* Rover on asteroid */}
-                                        <a-entity id={`rover-${idx}`} position="0 0 3.3" rotation="0 0 0">
-                                            <a-box width="0.32" height="0.2" depth="0.26" color="#B8963E"></a-box>
-                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 -0.1"></a-cylinder>
-                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="-0.16 -0.09 0.1"></a-cylinder>
-                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 -0.1"></a-cylinder>
-                                            <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#333" position="0.16 -0.09 0.1"></a-cylinder>
-                                            <a-box width="0.16" height="0.06" depth="0.08" color="#606060" position="0 0.13 -0.03"></a-box>
+                                    {samples.map(s => (
+                                        <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
+                                            <a-sphere radius="0.05" color="#7bffb2" material="transparent: true; opacity: 0.95" />
                                         </a-entity>
+                                    ))}
+
+                                    {obstacles.map(o => (
+                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
+                                            <a-sphere radius="0.06" color="#ff4d4d" material="transparent: true; opacity: 0.95" />
+                                        </a-entity>
+                                    ))}
+
+                                    {/* Rover on asteroid as cyan wireframe spaceship */}
+                                    <a-entity id={`rover`} position="0 0 3.3" rotation="0 0 0">
+                                        <a-box width="0.32" height="0.2" depth="0.26" color="#00d4ff" wireframe="true"></a-box>
+                                        <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#00d4ff" wireframe="true" position="-0.16 -0.09 -0.1"></a-cylinder>
+                                        <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#00d4ff" wireframe="true" position="-0.16 -0.09 0.1"></a-cylinder>
+                                        <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#00d4ff" wireframe="true" position="0.16 -0.09 -0.1"></a-cylinder>
+                                        <a-cylinder radius="0.06" height="0.08" rotation="0 0 90" color="#00d4ff" wireframe="true" position="0.16 -0.09 0.1"></a-cylinder>
+                                        <a-box width="0.16" height="0.06" depth="0.08" color="#00d4ff" wireframe="true" position="0 0.13 -0.03"></a-box>
                                     </a-entity>
                                 </a-entity>
-                            ))}
+                            </a-marker>
                         </a-scene>
                     </div>
 
@@ -806,67 +719,108 @@ const App = () => {
                                     bottom: 52,
                                     zIndex: 30,
                                     width: 280,
-                                    background: 'rgba(0,0,0,0.78)',
+                                    background: 'rgba(0,0,0,0.85)',
                                     color: '#fff',
-                                    borderRadius: 10,
-                                    padding: 10,
-                                    display: 'grid',
-                                    gap: 8,
-                                    pointerEvents: 'auto',
-                                    fontSize: 12,
+                                    padding: '12px 16px',
+                                    borderRadius: 12,
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: 12,
+                                    fontFamily: 'sans-serif',
+                                    maxHeight: '70vh',
+                                    overflowY: 'auto'
                                 }}
                             >
-                                <div><b>Calibration</b> (active marker: {activeArTarget})</div>
-                                <div>x: {activeCalibration.offsetX} | y: {activeCalibration.offsetY} | z: {activeCalibration.offsetZ}</div>
-                                <div>rotY: {activeCalibration.rotY} | scale: {activeCalibration.scale} | depth: {activeCalibration.depthScale}</div>
-                                <div style={{ opacity: 0.85 }}>Hold any button to continuously adjust.</div>
-                                <div style={{ opacity: 0.85 }}>For this setup, Z- usually moves farther away; Z+ moves closer.</div>
-                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                                    <button onPointerDown={() => startCalibrationHold('offsetX', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>X-</button>
-                                    <button onPointerDown={() => startCalibrationHold('offsetX', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>X+</button>
-                                    <button onPointerDown={() => startCalibrationHold('offsetY', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Y-</button>
-                                    <button onPointerDown={() => startCalibrationHold('offsetY', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Y+</button>
-                                    <button onPointerDown={() => startCalibrationHold('offsetZ', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Z-</button>
-                                    <button onPointerDown={() => startCalibrationHold('offsetZ', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Z+</button>
+                                <h3 style={{ margin: 0, fontSize: 16 }}>Area Calibration</h3>
+                                
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Scale: {globalScale.toFixed(2)}
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setGlobalScale(s => s - 0.05)} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setGlobalScale(s => s + 0.05)} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                        <button onClick={() => setGlobalScale(s => s - 0.01)} style={{ flex: 1, padding: 4, fontSize: 11 }}>Fine -</button>
+                                        <button onClick={() => setGlobalScale(s => s + 0.01)} style={{ flex: 1, padding: 4, fontSize: 11 }}>Fine +</button>
+                                    </div>
                                 </div>
-                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                                    <button onPointerDown={() => startCalibrationHold('rotY', -5)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Rot-</button>
-                                    <button onPointerDown={() => startCalibrationHold('rotY', 5)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Rot+</button>
-                                    <button onPointerDown={() => startCalibrationHold('scale', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Scale-</button>
-                                    <button onPointerDown={() => startCalibrationHold('scale', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Scale+</button>
-                                    <button onPointerDown={() => startCalibrationHold('depthScale', -0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Depth-</button>
-                                    <button onPointerDown={() => startCalibrationHold('depthScale', 0.05)} onPointerUp={stopCalibrationHold} onPointerLeave={stopCalibrationHold} onPointerCancel={stopCalibrationHold}>Depth+</button>
+
+                                <hr style={{ borderColor: 'rgba(255,255,255,0.2)', width: '100%', margin: '4px 0' }} />
+
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Position X: {globalPos.x.toFixed(2)}
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setGlobalPos(p => ({...p, x: p.x - 0.05}))} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setGlobalPos(p => ({...p, x: p.x + 0.05}))} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
                                 </div>
-                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                                    <button onClick={saveCalibration}>Save Local</button>
-                                    <button onClick={resetCalibration}>Reset</button>
-                                    <button
-                                        onClick={async () => {
-                                            const payload = JSON.stringify({
-                                                activeMarker: activeArTarget,
-                                                calibration: activeCalibration,
-                                                allMarkers: arCalibrationByMarker,
-                                            });
-                                            try {
-                                                await navigator.clipboard.writeText(payload);
-                                            } catch (_) {
-                                                // Ignore clipboard failures.
-                                            }
-                                        }}
-                                    >
-                                        Copy JSON
-                                    </button>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Position Y (Height): {globalPos.y.toFixed(2)}
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setGlobalPos(p => ({...p, y: p.y - 0.05}))} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setGlobalPos(p => ({...p, y: p.y + 0.05}))} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Position Z: {globalPos.z.toFixed(2)}
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setGlobalPos(p => ({...p, z: p.z - 0.05}))} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setGlobalPos(p => ({...p, z: p.z + 0.05}))} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
                                 </div>
                             </div>
                         )}
 
+
                         {!showCalibrationPanel && (
                             <>
-                                <div id="score-display">
+                                <div 
+                                    style={{
+                                        position: 'absolute',
+                                        top: 0, left: 0, width: '100%', height: '100%',
+                                        zIndex: 10,
+                                        pointerEvents: 'auto'
+                                    }}
+                                    onPointerDown={handleRaycastFire}
+                                >
+                                    {/* 2D Targeting Reticle */}
+                                    <div style={{
+                                        position: 'absolute',
+                                        top: '50%',
+                                        left: '50%',
+                                        transform: 'translate(-50%, -50%)',
+                                        width: '24px',
+                                        height: '24px',
+                                        border: '2px solid #00d4ff',
+                                        borderRadius: '50%',
+                                        pointerEvents: 'none',
+                                    }}>
+                                       <div style={{
+                                           position: 'absolute',
+                                           top: '50%',
+                                           left: '50%',
+                                           transform: 'translate(-50%, -50%)',
+                                           width: '4px',
+                                           height: '4px',
+                                           backgroundColor: '#00d4ff',
+                                           borderRadius: '50%'
+                                       }}></div>
+                                    </div>
+                                </div>
+
+                                <div id="score-display" style={{ zIndex: 20 }}>
                                     SCORE <span id="score">{score}</span>
                                 </div>
 
-                                <div className="mode-ui">
+                                <div className="mode-ui" style={{ zIndex: 20 }}>
                                     <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${energy}%` }} /></div></div>
                                     <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
                                 </div>
