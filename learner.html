@@ -164,7 +164,19 @@
         const jsonString = JSON.stringify(areaConfig);
         
         localStorage.setItem('ARjsMultiMarkerFile', jsonString);
-        updateStatus("Area configuration SAVED to browser! You can now open your main game page.");
+        
+        // Trigger browser download of config.json
+        const blob = new Blob([jsonString], {type: "application/json"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "config.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        updateStatus("Configuration saved! A 'config.json' file has been downloaded. Place it in your public folder!");
         console.log("Multi-Marker Map Saved:", jsonString);
     });
   </script>
