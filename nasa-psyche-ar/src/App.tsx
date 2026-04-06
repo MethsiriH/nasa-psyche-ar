@@ -36,6 +36,46 @@ const WAYPOINT_DIRECTIONS: [number, number, number][] = [
 ];
 const COLLISION_OFFSET = { x: -3.75, y: -2.2, z: 3.22 };
 
+/** Saved AR alignment: positions virtual rock on/around the physical print (marker plane ≠ object hull). */
+const AR_CALIBRATION_STORAGE_KEY = 'psyche-ar-alignment-v1';
+const DEFAULT_AR_CALIBRATION = {
+    globalScale: 2.2,
+    globalPos: { x: -1.13, y: 0.3, z: 0.1 } as { x: number; y: number; z: number },
+    globalRot: { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number },
+    /** Multiplies Z scale only — use when the print looks thicker/thinner along view depth than the GLB. */
+    depthScale: 1,
+    /**
+     * Lerp toward raw AR marker pose each frame (lower = less shake, slightly more motion lag).
+     * Typical range ~0.08–0.28.
+     */
+    /** Lower = steadier overlay, more lag when moving the phone (stability-first). */
+    trackingSmooth: 0.07,
+};
+
+function readStoredArCalibration(): typeof DEFAULT_AR_CALIBRATION {
+    if (typeof window === 'undefined') return DEFAULT_AR_CALIBRATION;
+    try {
+        const raw = localStorage.getItem(AR_CALIBRATION_STORAGE_KEY);
+        if (!raw) return DEFAULT_AR_CALIBRATION;
+        const p = JSON.parse(raw) as Partial<typeof DEFAULT_AR_CALIBRATION>;
+        return {
+            globalScale: typeof p.globalScale === 'number' ? p.globalScale : DEFAULT_AR_CALIBRATION.globalScale,
+            globalPos:
+                p.globalPos && typeof p.globalPos.x === 'number'
+                    ? { x: p.globalPos.x, y: p.globalPos.y, z: p.globalPos.z }
+                    : { ...DEFAULT_AR_CALIBRATION.globalPos },
+            globalRot:
+                p.globalRot && typeof p.globalRot.x === 'number'
+                    ? { x: p.globalRot.x, y: p.globalRot.y, z: p.globalRot.z }
+                    : { ...DEFAULT_AR_CALIBRATION.globalRot },
+            depthScale: typeof p.depthScale === 'number' ? p.depthScale : DEFAULT_AR_CALIBRATION.depthScale,
+            trackingSmooth:
+                typeof p.trackingSmooth === 'number' ? p.trackingSmooth : DEFAULT_AR_CALIBRATION.trackingSmooth,
+        };
+    } catch {
+        return DEFAULT_AR_CALIBRATION;
+    }
+}
 
 const App = () => {
     const [gameState, setGameState] = useState('MENU');
@@ -59,9 +99,24 @@ const App = () => {
     const [showCalibrationPanel, setShowCalibrationPanel] = useState(false);
     const [meshLoaded, setMeshLoaded] = useState(false);
     
-    // Global Area Calibration — scale derived from iPhone measurement (~37cm asteroid, ~16cm/AR-unit)
-    const [globalScale, setGlobalScale] = useState(2.2);
-    const [globalPos, setGlobalPos] = useState({ x: -1.13, y: 0.3, z: 0.1 });
+    // Global Area Calibration — match rigid GLB to physical print (pose + uniform scale + optional Z stretch)
+    const arInitial = readStoredArCalibration();
+    const [globalScale, setGlobalScale] = useState(arInitial.globalScale);
+    const [globalPos, setGlobalPos] = useState({ ...arInitial.globalPos });
+    const [globalRot, setGlobalRot] = useState({ ...arInitial.globalRot });
+    const [depthScale, setDepthScale] = useState(arInitial.depthScale);
+    const [trackingSmooth, setTrackingSmooth] = useState(arInitial.trackingSmooth);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem(
+                AR_CALIBRATION_STORAGE_KEY,
+                JSON.stringify({ globalScale, globalPos, globalRot, depthScale, trackingSmooth })
+            );
+        } catch {
+            /* ignore */
+        }
+    }, [globalScale, globalPos, globalRot, depthScale, trackingSmooth]);
     const [roverReady, setRoverReady] = useState(false);
     const [waypoints, setWaypoints] = useState<{ id: string; x: number; y: number; z: number; nx: number; ny: number; nz: number }[]>([]);
     const lastDirectionRef = useRef<[number, number]>([0, 1]);
@@ -624,11 +679,23 @@ const App = () => {
                         >
                             <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
                             
-                            <a-marker type="area" url="./config.json">
+                            {/*
+                              Marker entity receives noisy pose from AR.js. Game content is parented under a sibling
+                              entity with ar-smooth-anchor to damp jitter (see arSmoothAnchor.ts).
+                            */}
+                            <a-marker id="psyche-ar-area-marker" type="area" url="./config.json">
+                                <a-entity position="0 0 0" />
+                            </a-marker>
+                            <a-entity
+                                ar-smooth-anchor={
+                                    `target: #psyche-ar-area-marker; positionLerp: ${trackingSmooth}; ` +
+                                    `rotationLerp: ${(trackingSmooth * 0.85).toFixed(4)}; scaleLerp: ${(trackingSmooth * 0.95).toFixed(4)}`
+                                }
+                            >
                                 <a-entity
                                     position={`${globalPos.x} ${globalPos.y} ${globalPos.z}`}
-                                    rotation={`0 0 0`}
-                                    scale={`${globalScale} ${globalScale} ${globalScale}`}
+                                    rotation={`${globalRot.x} ${globalRot.y} ${globalRot.z}`}
+                                    scale={`${globalScale} ${globalScale} ${globalScale * depthScale}`}
                                 >
                                     <a-entity position="0 0 0" rotation="0 0 0">
                                         <a-gltf-model
@@ -686,7 +753,7 @@ const App = () => {
                                         <a-box width="0.16" height="0.06" depth="0.08" color="#00d4ff" wireframe="true" position="0 0.13 -0.03"></a-box>
                                     </a-entity>
                                 </a-entity>
-                            </a-marker>
+                            </a-entity>
                         </a-scene>
                     </div>
 
@@ -731,11 +798,40 @@ const App = () => {
                                     overflowY: 'auto'
                                 }}
                             >
-                                <h3 style={{ margin: 0, fontSize: 16 }}>Area Calibration</h3>
+                                <h3 style={{ margin: 0, fontSize: 16 }}>Align to physical print</h3>
+                                <p style={{ margin: 0, fontSize: 11, lineHeight: 1.35, opacity: 0.85 }}>
+                                    Markers on the floor and on the sloped print can make the solver “fight” and look shaky.
+                                    Position/rotation/scale match the light-gray print; tracking smooth reduces jitter (lower = steadier).
+                                    Values save in this browser.
+                                </p>
+
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Tracking smooth: {trackingSmooth.toFixed(2)} (lower = more stable; placement can stay rough)
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setTrackingSmooth(t => Math.max(0.04, t - 0.02))}
+                                            style={{ flex: 1, padding: 6 }}
+                                        >
+                                            −
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setTrackingSmooth(t => Math.min(0.38, t + 0.02))}
+                                            style={{ flex: 1, padding: 6 }}
+                                        >
+                                            +
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <hr style={{ borderColor: 'rgba(255,255,255,0.2)', width: '100%', margin: '4px 0' }} />
                                 
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Scale: {globalScale.toFixed(2)}
+                                        Uniform scale: {globalScale.toFixed(2)}
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalScale(s => s - 0.05)} style={{ flex: 1, padding: 6 }}>-</button>
@@ -760,7 +856,7 @@ const App = () => {
                                 </div>
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Position Y (Height): {globalPos.y.toFixed(2)}
+                                        Position Y (up/down — lower to sit on print): {globalPos.y.toFixed(2)}
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalPos(p => ({...p, y: p.y - 0.05}))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -776,6 +872,64 @@ const App = () => {
                                         <button onClick={() => setGlobalPos(p => ({...p, z: p.z + 0.05}))} style={{ flex: 1, padding: 6 }}>+</button>
                                     </div>
                                 </div>
+
+                                <hr style={{ borderColor: 'rgba(255,255,255,0.2)', width: '100%', margin: '4px 0' }} />
+
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Rotation X (tilt forward/back): {globalRot.x.toFixed(0)}°
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setGlobalRot(r => ({ ...r, x: r.x - 5 }))} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setGlobalRot(r => ({ ...r, x: r.x + 5 }))} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Rotation Y (spin): {globalRot.y.toFixed(0)}°
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setGlobalRot(r => ({ ...r, y: r.y - 5 }))} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setGlobalRot(r => ({ ...r, y: r.y + 5 }))} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Rotation Z (roll): {globalRot.z.toFixed(0)}°
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setGlobalRot(r => ({ ...r, z: r.z - 5 }))} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setGlobalRot(r => ({ ...r, z: r.z + 5 }))} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Depth scale (Z only — thicker/thinner vs. camera): {depthScale.toFixed(2)}
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button onClick={() => setDepthScale(d => Math.max(0.2, d - 0.05))} style={{ flex: 1, padding: 6 }}>-</button>
+                                        <button onClick={() => setDepthScale(d => d + 0.05)} style={{ flex: 1, padding: 6 }}>+</button>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                                        <button onClick={() => setDepthScale(d => Math.max(0.2, d - 0.01))} style={{ flex: 1, padding: 4, fontSize: 11 }}>Fine -</button>
+                                        <button onClick={() => setDepthScale(d => d + 0.01)} style={{ flex: 1, padding: 4, fontSize: 11 }}>Fine +</button>
+                                    </div>
+                                </div>
+
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setGlobalScale(DEFAULT_AR_CALIBRATION.globalScale);
+                                        setGlobalPos({ ...DEFAULT_AR_CALIBRATION.globalPos });
+                                        setGlobalRot({ ...DEFAULT_AR_CALIBRATION.globalRot });
+                                        setDepthScale(DEFAULT_AR_CALIBRATION.depthScale);
+                                        setTrackingSmooth(DEFAULT_AR_CALIBRATION.trackingSmooth);
+                                    }}
+                                    style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.08)', color: '#fff', cursor: 'pointer' }}
+                                >
+                                    Reset alignment defaults
+                                </button>
                             </div>
                         )}
 

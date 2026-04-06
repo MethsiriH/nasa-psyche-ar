@@ -1,6 +1,7 @@
 /** React entry point: mounts App into #root. */
 import React from 'react'
 import ReactDOM from 'react-dom/client'
+import './arSmoothAnchor'
 import App from './App'
 import './index.css'
 
