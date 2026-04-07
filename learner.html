@@ -1,23 +1,24 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>AR.js Setup: Area Learner</title>
+  <meta charset="UTF-8" />
+  <title>AR.js Area Learner — NASA Psyche AR</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
   <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
   <style>
    .ui-panel {
-      position: absolute; 
-      top: 15px; 
+      position: absolute;
+      top: 8px;
       width: 100%;
-      text-align: center; 
-      z-index: 1000; 
-      font-family: sans-serif;
+      text-align: center;
+      z-index: 1000;
+      font-family: system-ui, sans-serif;
     }
-    button { 
-      padding: 12px 20px; 
-      font-size: 16px; 
-      margin: 5px; 
+    button {
+      padding: 12px 20px;
+      font-size: 16px;
+      margin: 5px;
       cursor: pointer;
       background-color: #28a745;
       color: white;
@@ -28,36 +29,60 @@
       background-color: #cccccc;
       cursor: not-allowed;
     }
-    #status { 
+    .hint {
+      max-width: 720px;
+      margin: 8px auto 0;
+      padding: 10px 14px;
+      font-size: 13px;
+      line-height: 1.45;
+      text-align: left;
+      background: rgba(0,0,0,0.75);
+      color: #eee;
+      border-radius: 8px;
+    }
+    .hint a { color: #7dd3fc; }
+    .hint strong { color: #fff; }
+    #status {
       position: fixed;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      background: rgba(0, 0, 0, 0.85); 
+      background: rgba(0, 0, 0, 0.88);
       color: white;
-      padding: 20px; 
-      border-radius: 12px; 
-      font-size: 22px;
-      font-weight: bold; 
-      text-align: center;
-      width: 80%;
-      max-width: 400px;
+      padding: 18px 20px;
+      border-radius: 12px;
+      font-size: 17px;
+      font-weight: 600;
+      text-align: left;
+      width: 88%;
+      max-width: 440px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
       z-index: 2000;
       pointer-events: none;
+      white-space: pre-line;
+      line-height: 1.4;
     }
+    .warn { color: #ffb4b4; font-weight: 700; }
+    .ok { color: #86efac; }
   </style>
 </head>
 <body style="margin: 0px; overflow: hidden;">
-  
+
   <div class="ui-panel">
-    <button id="start-learning">1. Start Learning</button>
-    <button id="save-learning" disabled>2. Save Configuration</button>
-    <br/>
-    <div id="status">Waiting for AR engine to load...</div>
+    <button type="button" id="start-learning">1. Start Learning</button>
+    <button type="button" id="save-learning" disabled>2. Save Configuration</button>
+    <div class="hint">
+      <strong>Markers:</strong> Generate <code>3×3</code> matrix, <strong>Hamming (6,3)</strong>, IDs <strong>0–7</strong> at
+      <a href="https://au.gmented.com/app/marker/marker.php" target="_blank" rel="noopener">au.gmented.com marker generator</a>
+      (same family as <code>matrixCodeType: 3x3_HAMMING63</code> in AR.js). Use <strong>border 0.24</strong> on the generator if available; the scene uses <code>patternRatio: 0.52</code> (ARToolKit <code>arSetBorderSize(0.24)</code> → inner pattern fraction <code>1−2×0.24</code>). <strong>Print size used for this project: 2×2 inches.</strong><br /><br />
+      <strong>Markers 4 &amp; 7:</strong> These patterns can look like the same design with one rotated 90°. The decoder may briefly report the wrong ID if orientation changes. Keep every print <strong>oriented consistently</strong> (e.g. same corner of the black square “up” toward the top of the table) so 4 stays 4 and 7 stays 7. If the wrong ID highlights, rotate that sheet 90° until the correct ID appears.
+    </div>
+    <br />
+    <div id="status">Waiting for AR engine to load…</div>
   </div>
 
-  <a-scene embedded arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63; debugUIEnabled: false;">
+  <!-- Matches ARToolKit: AR_MATRIX_CODE_3x3_HAMMING63 + border 0.24 (→ patternRatio 0.52) -->
+  <a-scene embedded arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63; patternRatio: 0.52; labelingMode: black_region; debugUIEnabled: false;">
     <a-marker type="barcode" value="0" id="marker-0"></a-marker>
     <a-marker type="barcode" value="1" id="marker-1"></a-marker>
     <a-marker type="barcode" value="2" id="marker-2"></a-marker>
@@ -71,11 +96,16 @@
 
   <script>
     const statusDiv = document.getElementById('status');
-    const updateStatus = (msg) => { statusDiv.innerText = msg; };
-    
+    const ALL_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
+
+    const updateStatus = (lines) => {
+      statusDiv.innerText = typeof lines === 'string' ? lines : lines.join('\n');
+    };
+
     let learningMode = false;
     let loopId = null;
     const THREE = window.THREE;
+
     const PREVIOUS_OFFSETS = {
         0: { x: 0, y: 0, z: 0 },
         2: { x: -1.075622656483844, y: 0, z: 1.2006581115615877 },
@@ -84,58 +114,93 @@
     };
 
     const knownMarkers = {};
-    for(const [idStr, pos] of Object.entries(PREVIOUS_OFFSETS)) {
-        // Pre-populate the spatial tracking array with your known constants
-        knownMarkers[parseInt(idStr)] = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z);
+    for (const [idStr, pos] of Object.entries(PREVIOUS_OFFSETS)) {
+        knownMarkers[parseInt(idStr, 10)] = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z);
     }
 
-    updateStatus("Ready! Point camera at Marker 0 to start anchor, then hit 'Start Learning'.");
+    function idsNotInCamera(visibleMarkers) {
+      const vis = new Set(visibleMarkers.map((m) => m.id));
+      return ALL_IDS.filter((id) => !vis.has(id));
+    }
+
+    function idsStillUnmapped() {
+      return ALL_IDS.filter((id) => knownMarkers[id] === undefined);
+    }
+
+    function formatLearningStatus(visibleMarkers, count) {
+      const vis = visibleMarkers.map((m) => m.id).sort((a, b) => a - b);
+      const missingView = idsNotInCamera(visibleMarkers);
+      const unmapped = idsStillUnmapped();
+
+      const lines = [
+        `Mapped: ${count} / 8`,
+        `In camera now: [${vis.length ? vis.join(', ') : 'none'}]`,
+        `NOT in camera (point at these): [${missingView.join(', ')}]`,
+        `Still unmapped: [${unmapped.join(', ')}]`,
+      ];
+
+      if (visibleMarkers.length > 0) {
+        const has4 = vis.includes(4);
+        const has7 = vis.includes(7);
+        if (has4 && has7) {
+          lines.push('4 & 7: both IDs visible — good.');
+        } else if (has4 !== has7 && unmapped.includes(4) && unmapped.includes(7)) {
+          lines.push('Tip: map 4 & 7 with consistent print rotation (see note above).');
+        }
+      }
+
+      if (count < 8) {
+        lines.push('');
+        lines.push('Show one mapped marker + one new marker in the same view.');
+      }
+      return lines;
+    }
+
+    updateStatus([
+      'Ready. Use 2×2 inch prints (generator link in green box).',
+      'Point at Marker 0, then tap Start Learning.',
+    ].join('\n'));
 
     const pollTracking = () => {
         if (!learningMode) return;
         loopId = requestAnimationFrame(pollTracking);
-        
-        // Find which markers are currently tracked
+
         const visibleMarkers = [];
-        for(let i=0; i<8; i++){
-            const el = document.getElementById('marker-'+i);
-            if(el && el.object3D.visible) {
+        for (let i = 0; i < 8; i++) {
+            const el = document.getElementById('marker-' + i);
+            if (el && el.object3D.visible) {
                 visibleMarkers.push({ id: i, mat: el.object3D.matrixWorld.clone() });
             }
         }
 
-        if(visibleMarkers.length < 2 && Object.keys(knownMarkers).length === 1 && !visibleMarkers.find(v => v.id===0)) {
-           // We only know marker 0, and we either see 0 or 1 marker. Do nothing.
-           return; 
+        if (visibleMarkers.length < 2 && Object.keys(knownMarkers).length === 1 && !visibleMarkers.find((v) => v.id === 0)) {
+           return;
         }
 
-        // Find a visible marker whose mapping to Marker 0 is ALREADY KNOWN
-        const knownVisible = visibleMarkers.find(m => knownMarkers[m.id] !== undefined);
-        if(knownVisible) {
-            // We know this marker's true offset relative to root (Marker 0)
-            const rootToKnown = knownMarkers[knownVisible.id]; 
-            
-            // Map any UNKNOWN visible markers to the Root
-            visibleMarkers.forEach(m => {
+        const knownVisible = visibleMarkers.find((m) => knownMarkers[m.id] !== undefined);
+        if (knownVisible) {
+            const rootToKnown = knownMarkers[knownVisible.id];
+
+            visibleMarkers.forEach((m) => {
                 if (knownMarkers[m.id] === undefined) {
-                    // Calculate spatial offset from the Known marker to this Unknown marker
                     const knownInverse = new THREE.Matrix4().copy(knownVisible.mat).invert();
                     const offsetFromKnown = new THREE.Matrix4().copy(knownInverse).multiply(m.mat);
-                    
-                    // Root -> Unknown = (Root -> Known) * (Known -> Unknown)
                     const rootToUnknown = new THREE.Matrix4().copy(rootToKnown).multiply(offsetFromKnown);
                     knownMarkers[m.id] = rootToUnknown;
                 }
             });
         }
-        
+
         const count = Object.keys(knownMarkers).length;
-        const visibleIds = visibleMarkers.map(m=>m.id).join(', ');
-        
+
         if (count === 8) {
-            updateStatus(`Success! Mapped all 8 markers!\nSeeing: [${visibleIds}]`);
+            updateStatus([
+              'Success! All 8 markers mapped.',
+              `Last seen: [${visibleMarkers.map((m) => m.id).sort((a,b)=>a-b).join(', ')}]`,
+              'Tap Save Configuration to download config.json',
+            ].join('\n'));
         } else {
-            updateStatus(`Mapped ${count} / 8 markers.\nSeeing: [${visibleIds}]\nLook at a MAPPED and UNMAPPED marker together.`);
+            updateStatus(formatLearningStatus(visibleMarkers, count));
         }
     };
 
@@ -148,8 +213,7 @@
     document.getElementById('save-learning').addEventListener('click', () => {
         learningMode = false;
         if (loopId) cancelAnimationFrame(loopId);
-        
-        // Format as expected by AR.js Multi-Marker Area component
+
         const subMarkersControls = [];
         for (let i = 0; i < 8; i++) {
             if (knownMarkers[i]) {
@@ -159,25 +223,24 @@
                 });
             }
         }
-        
+
         const areaConfig = { subMarkersControls };
         const jsonString = JSON.stringify(areaConfig);
-        
+
         localStorage.setItem('ARjsMultiMarkerFile', jsonString);
-        
-        // Trigger browser download of config.json
-        const blob = new Blob([jsonString], {type: "application/json"});
+
+        const blob = new Blob([jsonString], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = "config.json";
+        a.download = 'config.json';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
-        updateStatus("Configuration saved! A 'config.json' file has been downloaded. Place it in your public folder!");
-        console.log("Multi-Marker Map Saved:", jsonString);
+        updateStatus('Saved! config.json downloaded — copy to your project public/ folder.');
+        console.log('Multi-Marker Map Saved:', jsonString);
     });
   </script>
 </body>
