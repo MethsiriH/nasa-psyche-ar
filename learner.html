@@ -72,7 +72,7 @@
     <button type="button" id="start-learning">1. Start Learning</button>
     <button type="button" id="save-learning" disabled>2. Save Configuration</button>
     <div class="hint">
-      <strong>Reference marker 4 = origin (0,0,0).</strong> All other poses in <code>config.json</code> are relative to marker 4 — easy to read and debug. Point the camera at <strong>marker 4</strong> first, then Start Learning, then show pairs of markers so all 8 map.<br /><br />
+      <strong>Reference marker 4 = origin (0,0,0).</strong> All other poses in <code>config.json</code> are relative to marker 4. Point the camera at <strong>marker 4</strong> first, tap <strong>Start Learning</strong> (this clears any previous session), then show pairs so all 8 map. If you still see <code>barcodeValue</code> 0 with an identity matrix and marker 4 not at (0,0,0), that is the <strong>old marker-0 format</strong> — re-learn or run <code>npm run rebase-config</code> in the project after placing <code>config.json</code> in <code>public/</code>.<br /><br />
       <strong>Markers:</strong> Generate <code>3×3</code> matrix, <strong>Hamming (6,3)</strong>, IDs <strong>0–7</strong> at
       <a href="https://au.gmented.com/app/marker/marker.php" target="_blank" rel="noopener">au.gmented.com marker generator</a>
       (same family as <code>matrixCodeType: 3x3_HAMMING63</code> in AR.js). Use <strong>border 0.24</strong> on the generator if available; the scene uses <code>patternRatio: 0.52</code> (ARToolKit <code>arSetBorderSize(0.24)</code> → inner pattern fraction <code>1−2×0.24</code>). <strong>Print size used for this project: 2×2 inches.</strong><br /><br />
@@ -207,9 +207,14 @@
     };
 
     document.getElementById('start-learning').addEventListener('click', () => {
+        Object.keys(knownMarkers).forEach((k) => delete knownMarkers[k]);
         learningMode = true;
         document.getElementById('save-learning').disabled = false;
         loopId = requestAnimationFrame(pollTracking);
+        updateStatus([
+          'Session reset. Show marker 4 in view — mapping starts from marker 4 as origin.',
+          'Then pair marker 4 with other markers until 8/8.',
+        ].join('\n'));
     });
 
     document.getElementById('save-learning').addEventListener('click', () => {
