@@ -72,6 +72,7 @@
     <button type="button" id="start-learning">1. Start Learning</button>
     <button type="button" id="save-learning" disabled>2. Save Configuration</button>
     <div class="hint">
+      <strong>Reference marker 4 = origin (0,0,0).</strong> All other poses in <code>config.json</code> are relative to marker 4 — easy to read and debug. Point the camera at <strong>marker 4</strong> first, then Start Learning, then show pairs of markers so all 8 map.<br /><br />
       <strong>Markers:</strong> Generate <code>3×3</code> matrix, <strong>Hamming (6,3)</strong>, IDs <strong>0–7</strong> at
       <a href="https://au.gmented.com/app/marker/marker.php" target="_blank" rel="noopener">au.gmented.com marker generator</a>
       (same family as <code>matrixCodeType: 3x3_HAMMING63</code> in AR.js). Use <strong>border 0.24</strong> on the generator if available; the scene uses <code>patternRatio: 0.52</code> (ARToolKit <code>arSetBorderSize(0.24)</code> → inner pattern fraction <code>1−2×0.24</code>). <strong>Print size used for this project: 2×2 inches.</strong><br /><br />
@@ -106,17 +107,8 @@
     let loopId = null;
     const THREE = window.THREE;
 
-    const PREVIOUS_OFFSETS = {
-        0: { x: 0, y: 0, z: 0 },
-        2: { x: -1.075622656483844, y: 0, z: 1.2006581115615877 },
-        5: { x: -2.2640675995770843, y: 0, z: -0.5862147482793422 },
-        7: { x: -0.9804085864844958, y: 0, z: -1.1863051898847403 },
-    };
-
+    /** Poses relative to marker 4 (marker 4 will be identity in saved file). */
     const knownMarkers = {};
-    for (const [idStr, pos] of Object.entries(PREVIOUS_OFFSETS)) {
-        knownMarkers[parseInt(idStr, 10)] = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z);
-    }
 
     function idsNotInCamera(visibleMarkers) {
       const vis = new Set(visibleMarkers.map((m) => m.id));
@@ -151,14 +143,14 @@
 
       if (count < 8) {
         lines.push('');
-        lines.push('Show one mapped marker + one new marker in the same view.');
+        lines.push('Show marker 4 + another marker in the same view to extend the map.');
       }
       return lines;
     }
 
     updateStatus([
       'Ready. Use 2×2 inch prints (generator link in green box).',
-      'Point at Marker 0, then tap Start Learning.',
+      'Point at marker 4, then tap Start Learning.',
     ].join('\n'));
 
     const pollTracking = () => {
@@ -173,8 +165,18 @@
             }
         }
 
-        if (visibleMarkers.length < 2 && Object.keys(knownMarkers).length === 1 && !visibleMarkers.find((v) => v.id === 0)) {
-           return;
+        /** Seed marker 4 as identity — all other poses become relative to marker 4. */
+        if (knownMarkers[4] === undefined) {
+            const vis4 = visibleMarkers.find((m) => m.id === 4);
+            if (vis4) {
+                knownMarkers[4] = new THREE.Matrix4().identity();
+            } else {
+                updateStatus([
+                  'Show marker 4 in the camera view first (reference = origin).',
+                  `In camera: [${visibleMarkers.map((m) => m.id).sort((a,b)=>a-b).join(', ') || 'none'}]`,
+                ].join('\n'));
+                return;
+            }
         }
 
         const knownVisible = visibleMarkers.find((m) => knownMarkers[m.id] !== undefined);
@@ -195,7 +197,7 @@
 
         if (count === 8) {
             updateStatus([
-              'Success! All 8 markers mapped.',
+              'Success! All 8 markers mapped (relative to marker 4).',
               `Last seen: [${visibleMarkers.map((m) => m.id).sort((a,b)=>a-b).join(', ')}]`,
               'Tap Save Configuration to download config.json',
             ].join('\n'));
@@ -214,12 +216,20 @@
         learningMode = false;
         if (loopId) cancelAnimationFrame(loopId);
 
+        if (!knownMarkers[4]) {
+            updateStatus('Cannot save: marker 4 was never mapped. Start again and show marker 4 first.');
+            return;
+        }
+
+        /** Express every pose with marker 4 exactly at identity (0,0,0 + I₃). */
+        const inv4 = new THREE.Matrix4().copy(knownMarkers[4]).invert();
         const subMarkersControls = [];
         for (let i = 0; i < 8; i++) {
             if (knownMarkers[i]) {
+                const pose = new THREE.Matrix4().copy(inv4).multiply(knownMarkers[i]);
                 subMarkersControls.push({
                     parameters: { type: 'barcode', barcodeValue: i },
-                    poseMatrix: Array.from(knownMarkers[i].elements)
+                    poseMatrix: Array.from(pose.elements)
                 });
             }
         }
@@ -239,7 +249,7 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
-        updateStatus('Saved! config.json downloaded — copy to your project public/ folder.');
+        updateStatus('Saved! Marker 4 = identity in file; others relative to 4. Copy config.json to public/.');
         console.log('Multi-Marker Map Saved:', jsonString);
     });
   </script>
