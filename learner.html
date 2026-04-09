@@ -2,278 +2,72 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>AR.js Area Learner — NASA Psyche AR</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calibration Workflow — NASA Psyche AR</title>
   <style>
-   .ui-panel {
-      position: absolute;
-      top: 8px;
-      width: 100%;
-      text-align: center;
-      z-index: 1000;
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
       font-family: system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      line-height: 1.5;
     }
-    button {
-      padding: 12px 20px;
-      font-size: 16px;
-      margin: 5px;
-      cursor: pointer;
-      background-color: #28a745;
-      color: white;
-      border: none;
-      border-radius: 5px;
+    main {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px 18px 40px;
     }
-    button:disabled {
-      background-color: #cccccc;
-      cursor: not-allowed;
+    h1, h2 { margin: 0 0 12px; }
+    .card {
+      background: #111827;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin: 12px 0;
     }
-    .hint {
-      max-width: 720px;
-      margin: 8px auto 0;
-      padding: 10px 14px;
-      font-size: 13px;
-      line-height: 1.45;
-      text-align: left;
-      background: rgba(0,0,0,0.75);
-      color: #eee;
+    code {
+      display: block;
+      white-space: pre-wrap;
+      background: #020617;
+      border: 1px solid #334155;
       border-radius: 8px;
+      padding: 10px;
+      color: #bae6fd;
     }
-    .hint a { color: #7dd3fc; }
-    .hint strong { color: #fff; }
-    #status {
-      position: fixed;
-      top: auto;
-      left: 50%;
-      bottom: 12px;
-      transform: translateX(-50%);
-      background: rgba(0, 0, 0, 0.88);
-      color: white;
-      padding: 18px 20px;
-      border-radius: 12px;
-      font-size: 17px;
-      font-weight: 600;
-      text-align: left;
-      width: min(92%, 560px);
-      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-      z-index: 2000;
-      pointer-events: none;
-      white-space: pre-line;
-      line-height: 1.4;
-    }
-    .warn { color: #ffb4b4; font-weight: 700; }
-    .ok { color: #86efac; }
+    ul { margin-top: 8px; }
   </style>
 </head>
-<body style="margin: 0px; overflow: hidden;">
+<body>
+  <main>
+    <h1>Desktop Calibration Workflow</h1>
+    <p>The mobile learner has been replaced with a Python desktop calibration flow because phone camera tracking was unreliable.</p>
 
-  <div class="ui-panel">
-    <button type="button" id="start-learning">1. Start Learning</button>
-    <button type="button" id="save-learning" disabled>2. Save Configuration</button>
-    <br />
-    <div id="status">Waiting for AR engine to load…</div>
-  </div>
+    <div class="card">
+      <h2>Run Calibration</h2>
+      <code>npm run calibrate:python</code>
+      <p>Or choose camera index explicitly:</p>
+      <code>npm run calibrate:python:cam0
+npm run calibrate:python:cam1</code>
+    </div>
 
-  <!-- Matches ARToolKit: AR_MATRIX_CODE_3x3_HAMMING63 + border 0.24 (→ patternRatio 0.52) -->
-  <a-scene
-    id="scene"
-    embedded
-    arjs="sourceType: webcam; detectionMode: mono_and_matrix; trackingMethod: best; matrixCodeType: 3x3_HAMMING63; patternRatio: 0.52; labelingMode: black_region; debugUIEnabled: false; sourceWidth: 1280; sourceHeight: 960; maxDetectionRate: 60;"
-  >
-    <a-marker type="barcode" value="0" id="marker-0"></a-marker>
-    <a-marker type="barcode" value="1" id="marker-1"></a-marker>
-    <a-marker type="barcode" value="2" id="marker-2"></a-marker>
-    <a-marker type="barcode" value="3" id="marker-3"></a-marker>
-    <a-marker type="barcode" value="4" id="marker-4"></a-marker>
-    <a-marker type="barcode" value="5" id="marker-5"></a-marker>
-    <a-marker type="barcode" value="6" id="marker-6"></a-marker>
-    <a-marker type="barcode" value="7" id="marker-7"></a-marker>
-    <a-entity camera></a-entity>
-  </a-scene>
+    <div class="card">
+      <h2>What this does</h2>
+      <ul>
+        <li>Uses marker <strong>4</strong> as origin (identity matrix).</li>
+        <li>Flattens table markers <strong>1,3,4,6</strong> to <strong>Y=0</strong>.</li>
+        <li>Writes output to <code>public/config.json</code>.</li>
+      </ul>
+    </div>
 
-  <script>
-    const statusDiv = document.getElementById('status');
-    const ALL_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
-
-    const updateStatus = (lines) => {
-      statusDiv.innerText = typeof lines === 'string' ? lines : lines.join('\n');
-    };
-
-    let learningMode = false;
-    let loopId = null;
-    const THREE = window.THREE;
-
-    /** Poses relative to marker 4 (marker 4 will be identity in saved file). */
-    const knownMarkers = {};
-
-    function idsNotInCamera(visibleMarkers) {
-      const vis = new Set(visibleMarkers.map((m) => m.id));
-      return ALL_IDS.filter((id) => !vis.has(id));
-    }
-
-    function idsStillUnmapped() {
-      return ALL_IDS.filter((id) => knownMarkers[id] === undefined);
-    }
-
-    function formatLearningStatus(visibleMarkers, count) {
-      const vis = visibleMarkers.map((m) => m.id).sort((a, b) => a - b);
-      const missingView = idsNotInCamera(visibleMarkers);
-      const unmapped = idsStillUnmapped();
-
-      const lines = [
-        `Mapped: ${count} / 8`,
-        `In camera now: [${vis.length ? vis.join(', ') : 'none'}]`,
-        `NOT in camera (point at these): [${missingView.join(', ')}]`,
-        `Still unmapped: [${unmapped.join(', ')}]`,
-      ];
-
-      if (visibleMarkers.length > 0) {
-        const has4 = vis.includes(4);
-        const has7 = vis.includes(7);
-        if (has4 && has7) {
-          lines.push('4 & 7: both IDs visible — good.');
-        } else if (has4 !== has7 && unmapped.includes(4) && unmapped.includes(7)) {
-          lines.push('Tip: map 4 & 7 with consistent print rotation (see note above).');
-        }
-      }
-
-      if (count < 8) {
-        lines.push('');
-        lines.push('Show marker 4 + another marker in the same view to extend the map.');
-      }
-      return lines;
-    }
-
-    updateStatus([
-      'Ready. Using ARToolKit matrix settings: 3x3 Hamming63, border 0.24 (patternRatio 0.52).',
-      'Print size: 2×2 inches.',
-      'Point at marker 4, then tap Start Learning.',
-    ].join('\n'));
-
-    const pollTracking = () => {
-        if (!learningMode) return;
-        loopId = requestAnimationFrame(pollTracking);
-
-        const visibleMarkers = [];
-        for (let i = 0; i < 8; i++) {
-            const el = document.getElementById('marker-' + i);
-            if (el && el.object3D.visible) {
-                visibleMarkers.push({ id: i, mat: el.object3D.matrixWorld.clone() });
-            }
-        }
-
-        /** Seed marker 4 as identity — all other poses become relative to marker 4. */
-        if (knownMarkers[4] === undefined) {
-            const vis4 = visibleMarkers.find((m) => m.id === 4);
-            if (vis4) {
-                knownMarkers[4] = new THREE.Matrix4().identity();
-            } else {
-                updateStatus([
-                  'Show marker 4 in the camera view first (reference = origin).',
-                  `In camera: [${visibleMarkers.map((m) => m.id).sort((a,b)=>a-b).join(', ') || 'none'}]`,
-                ].join('\n'));
-                return;
-            }
-        }
-
-        const knownVisible = visibleMarkers.find((m) => knownMarkers[m.id] !== undefined);
-        if (knownVisible) {
-            const rootToKnown = knownMarkers[knownVisible.id];
-
-            visibleMarkers.forEach((m) => {
-                if (knownMarkers[m.id] === undefined) {
-                    const knownInverse = new THREE.Matrix4().copy(knownVisible.mat).invert();
-                    const offsetFromKnown = new THREE.Matrix4().copy(knownInverse).multiply(m.mat);
-                    const rootToUnknown = new THREE.Matrix4().copy(rootToKnown).multiply(offsetFromKnown);
-                    knownMarkers[m.id] = rootToUnknown;
-                }
-            });
-        }
-
-        const count = Object.keys(knownMarkers).length;
-
-        if (count === 8) {
-            updateStatus([
-              'Success! All 8 markers mapped (relative to marker 4).',
-              `Last seen: [${visibleMarkers.map((m) => m.id).sort((a,b)=>a-b).join(', ')}]`,
-              'Tap Save Configuration to download config.json',
-            ].join('\n'));
-        } else {
-            updateStatus(formatLearningStatus(visibleMarkers, count));
-        }
-    };
-
-    document.getElementById('start-learning').addEventListener('click', () => {
-        Object.keys(knownMarkers).forEach((k) => delete knownMarkers[k]);
-        learningMode = true;
-        document.getElementById('save-learning').disabled = false;
-        loopId = requestAnimationFrame(pollTracking);
-        updateStatus([
-          'Session reset. Show marker 4 in view — mapping starts from marker 4 as origin.',
-          'Then pair marker 4 with other markers until 8/8.',
-        ].join('\n'));
-    });
-
-    const TABLE_MARKER_IDS = new Set([1, 3, 4, 6]);
-
-    document.getElementById('save-learning').addEventListener('click', () => {
-        learningMode = false;
-        if (loopId) cancelAnimationFrame(loopId);
-
-        if (!knownMarkers[4]) {
-            updateStatus('Cannot save: marker 4 was never mapped. Start again and show marker 4 first.');
-            return;
-        }
-
-        /** Express every pose with marker 4 exactly at identity (0,0,0 + I₃). */
-        const inv4 = new THREE.Matrix4().copy(knownMarkers[4]).invert();
-        const subMarkersControls = [];
-        for (let i = 0; i < 8; i++) {
-            if (knownMarkers[i]) {
-                const pose = new THREE.Matrix4().copy(inv4).multiply(knownMarkers[i]);
-                const elements = Array.from(pose.elements);
-
-                // Keep table markers coplanar in Three.js Y-up space.
-                if (TABLE_MARKER_IDS.has(i)) {
-                    elements[13] = 0; // translation Y
-                }
-                // Keep marker 4 as exact identity reference.
-                if (i === 4) {
-                    elements.splice(
-                      0,
-                      16,
-                      1, 0, 0, 0,
-                      0, 1, 0, 0,
-                      0, 0, 1, 0,
-                      0, 0, 0, 1
-                    );
-                }
-                subMarkersControls.push({
-                    parameters: { type: 'barcode', barcodeValue: i },
-                    poseMatrix: elements
-                });
-            }
-        }
-
-        const areaConfig = { subMarkersControls };
-        const jsonString = JSON.stringify(areaConfig);
-
-        localStorage.setItem('ARjsMultiMarkerFile', jsonString);
-
-        const blob = new Blob([jsonString], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'config.json';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        updateStatus('Saved! Marker 4 = identity in file; others relative to 4. Copy config.json to public/.');
-        console.log('Multi-Marker Map Saved:', jsonString);
-    });
-  </script>
+    <div class="card">
+      <h2>Marker settings</h2>
+      <ul>
+        <li>Matrix type: <strong>3x3 Hamming (6,3)</strong></li>
+        <li>Border size: <strong>0.24</strong> (AR.js patternRatio 0.52)</li>
+        <li>Print size: <strong>2x2 inches</strong></li>
+      </ul>
+    </div>
+  </main>
 </body>
 </html>
