@@ -43,24 +43,23 @@
     .hint a { color: #7dd3fc; }
     .hint strong { color: #fff; }
     #status {
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: rgba(0, 0, 0, 0.88);
+      /* Keep status minimal (only "still unmapped"). */
+      position: static;
+      margin: 10px auto 0;
+      background: rgba(0, 0, 0, 0.70);
       color: white;
-      padding: 18px 20px;
-      border-radius: 12px;
-      font-size: 17px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 13px;
       font-weight: 600;
-      text-align: left;
-      width: 88%;
-      max-width: 440px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      text-align: center;
+      width: 92%;
+      max-width: 720px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
       z-index: 2000;
       pointer-events: none;
       white-space: pre-line;
-      line-height: 1.4;
+      line-height: 1.35;
     }
     .warn { color: #ffb4b4; font-weight: 700; }
     .ok { color: #86efac; }
@@ -110,47 +109,20 @@
     /** Poses relative to marker 4 (marker 4 will be identity in saved file). */
     const knownMarkers = {};
 
-    function idsNotInCamera(visibleMarkers) {
-      const vis = new Set(visibleMarkers.map((m) => m.id));
-      return ALL_IDS.filter((id) => !vis.has(id));
-    }
-
     function idsStillUnmapped() {
       return ALL_IDS.filter((id) => knownMarkers[id] === undefined);
     }
 
     function formatLearningStatus(visibleMarkers, count) {
-      const vis = visibleMarkers.map((m) => m.id).sort((a, b) => a - b);
-      const missingView = idsNotInCamera(visibleMarkers);
       const unmapped = idsStillUnmapped();
 
-      const lines = [
-        `Mapped: ${count} / 8`,
-        `In camera now: [${vis.length ? vis.join(', ') : 'none'}]`,
-        `NOT in camera (point at these): [${missingView.join(', ')}]`,
-        `Still unmapped: [${unmapped.join(', ')}]`,
-      ];
-
-      if (visibleMarkers.length > 0) {
-        const has4 = vis.includes(4);
-        const has7 = vis.includes(7);
-        if (has4 && has7) {
-          lines.push('4 & 7: both IDs visible — good.');
-        } else if (has4 !== has7 && unmapped.includes(4) && unmapped.includes(7)) {
-          lines.push('Tip: map 4 & 7 with consistent print rotation (see note above).');
-        }
-      }
-
-      if (count < 8) {
-        lines.push('');
-        lines.push('Show marker 4 + another marker in the same view to extend the map.');
-      }
-      return lines;
+      // Minimal on-screen status requested: unmapped list only.
+      return [`Still unmapped: [${unmapped.join(', ')}]`];
     }
 
     updateStatus([
-      'Ready. Use 2×2 inch prints (generator link in green box).',
-      'Point at marker 4, then tap Start Learning.',
+      'Ready.',
+      'Tap Start Learning (show marker 4 first).',
     ].join('\n'));
 
     const pollTracking = () => {
@@ -194,13 +166,8 @@
         }
 
         const count = Object.keys(knownMarkers).length;
-
         if (count === 8) {
-            updateStatus([
-              'Success! All 8 markers mapped (relative to marker 4).',
-              `Last seen: [${visibleMarkers.map((m) => m.id).sort((a,b)=>a-b).join(', ')}]`,
-              'Tap Save Configuration to download config.json',
-            ].join('\n'));
+            updateStatus('All markers mapped. Tap Save Configuration.');
         } else {
             updateStatus(formatLearningStatus(visibleMarkers, count));
         }
@@ -211,10 +178,7 @@
         learningMode = true;
         document.getElementById('save-learning').disabled = false;
         loopId = requestAnimationFrame(pollTracking);
-        updateStatus([
-          'Session reset. Show marker 4 in view — mapping starts from marker 4 as origin.',
-          'Then pair marker 4 with other markers until 8/8.',
-        ].join('\n'));
+        updateStatus('Session reset. Show marker 4 + another marker to map the rest.');
     });
 
     document.getElementById('save-learning').addEventListener('click', () => {
