@@ -44,9 +44,9 @@
     .hint strong { color: #fff; }
     #status {
       position: fixed;
-      top: 50%;
       left: 50%;
-      transform: translate(-50%, -50%);
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      transform: translateX(-50%);
       background: rgba(0, 0, 0, 0.88);
       color: white;
       padding: 18px 20px;
@@ -54,8 +54,7 @@
       font-size: 17px;
       font-weight: 600;
       text-align: left;
-      width: 88%;
-      max-width: 440px;
+      width: min(92%, 560px);
       box-shadow: 0 8px 24px rgba(0,0,0,0.4);
       z-index: 2000;
       pointer-events: none;
