@@ -215,6 +215,8 @@
         ].join('\n'));
     });
 
+    const TABLE_MARKER_IDS = new Set([1, 3, 4, 6]);
+
     document.getElementById('save-learning').addEventListener('click', () => {
         learningMode = false;
         if (loopId) cancelAnimationFrame(loopId);
@@ -230,9 +232,26 @@
         for (let i = 0; i < 8; i++) {
             if (knownMarkers[i]) {
                 const pose = new THREE.Matrix4().copy(inv4).multiply(knownMarkers[i]);
+                const elements = Array.from(pose.elements);
+
+                // Keep table markers coplanar in Three.js Y-up space.
+                if (TABLE_MARKER_IDS.has(i)) {
+                    elements[13] = 0; // translation Y
+                }
+                // Keep marker 4 as exact identity reference.
+                if (i === 4) {
+                    elements.splice(
+                      0,
+                      16,
+                      1, 0, 0, 0,
+                      0, 1, 0, 0,
+                      0, 0, 1, 0,
+                      0, 0, 0, 1
+                    );
+                }
                 subMarkersControls.push({
                     parameters: { type: 'barcode', barcodeValue: i },
-                    poseMatrix: Array.from(pose.elements)
+                    poseMatrix: elements
                 });
             }
         }
