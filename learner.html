@@ -76,7 +76,11 @@
   </div>
 
   <!-- Matches ARToolKit: AR_MATRIX_CODE_3x3_HAMMING63 + border 0.24 (→ patternRatio 0.52) -->
-  <a-scene embedded arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63; patternRatio: 0.52; labelingMode: black_region; debugUIEnabled: false;">
+  <a-scene
+    id="scene"
+    embedded
+    arjs="sourceType: webcam; detectionMode: mono_and_matrix; trackingMethod: best; matrixCodeType: 3x3_HAMMING63; patternRatio: 0.52; labelingMode: black_region; debugUIEnabled: false; sourceWidth: 1280; sourceHeight: 960; maxDetectionRate: 60;"
+  >
     <a-marker type="barcode" value="0" id="marker-0"></a-marker>
     <a-marker type="barcode" value="1" id="marker-1"></a-marker>
     <a-marker type="barcode" value="2" id="marker-2"></a-marker>
@@ -142,7 +146,8 @@
     }
 
     updateStatus([
-      'Ready. Use 2×2 inch prints (generator link in green box).',
+      'Ready. Using ARToolKit matrix settings: 3x3 Hamming63, border 0.24 (patternRatio 0.52).',
+      'Print size: 2×2 inches.',
       'Point at marker 4, then tap Start Learning.',
     ].join('\n'));
 
