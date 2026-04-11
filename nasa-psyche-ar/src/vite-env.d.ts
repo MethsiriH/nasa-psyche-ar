@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 /** A-Frame element types for JSX. */
 declare namespace JSX {
     interface IntrinsicElements {
@@ -12,5 +14,6 @@ declare namespace JSX {
         'a-light': any;
         'a-gltf-model': any;
         'a-text': any;
+        'a-marker': any;
     }
 }

@@ -9,7 +9,13 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "deploy": "gh-pages -d dist",
+    "rebase-config": "node scripts/rebase-config-to-marker4.mjs public/config.json",
+    "recenter-config": "node scripts/recenter-config-to-table-centroid.mjs public/config.json",
+    "calibrate:python": "python scripts/calibration.py",
+    "calibrate:python:cam0": "python scripts/calibration.py --camera 0",
+    "calibrate:python:cam1": "python scripts/calibration.py --camera 1",
+    "calibrate:surface": "python scripts/calibration.py --camera 1 --target-ids 0,2,5,7 --merge-existing"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -20,6 +26,7 @@
     "@types/react-dom": "^18.2.22",
     "@vitejs/plugin-react": "^4.2.1",
     "gh-pages": "^6.3.0",
+    "three": "^0.183.2",
     "typescript": "^5.2.2",
     "vite": "^5.2.0",
     "vite-plugin-wasm-pack": "^0.1.12"

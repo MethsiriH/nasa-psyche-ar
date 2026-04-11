@@ -2,8 +2,21 @@
  * NASA Psyche AR — Web/AR rover exploration experience.
  * Uses React + A-Frame for 3D, Rust/WASM for collision and movement.
  */
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import MODE_CONFIG, { Difficulty } from './modeConfig';
+import {
+    averageTranslationForBarcodes,
+    marker4PlaneDebugFrame,
+    AR_TABLE_BARCODE_IDS,
+    AR_SURFACE_BARCODE_IDS,
+    type AreaConfigJson,
+    type Marker4PlaneDebugFrame,
+} from './arClusterFromConfig';
+import {
+    physicalOffsetToScene,
+    physicalEulerDegreesToSceneRotationString,
+    physicalScaleToSceneString,
+} from './arCalibrationSpace';
 // @ts-ignore
 import init, { load_collision_mesh, move_rover_on_asteroid, get_surface_point_in_direction } from '../rust_engine/pkg/rust_engine';
 
@@ -34,23 +47,65 @@ const WAYPOINT_DIRECTIONS: [number, number, number][] = [
     [0.707, 0, 0.707], [-0.707, 0.2, 0.707], [0, 0.707, 0.707], [0, -0.707, 0.707],
     [0.707, 0.707, 0], [-0.707, 0.5, -0.5], [0, 0, -1], [0.5, -0.707, -0.5],
 ];
-const COLLISION_OFFSET = { x: -3.75, y: -2.2, z: 3.22 };
+const COLLISION_OFFSET = { x: 0, y: 0, z: 0 };
 
 /** Saved AR alignment: positions virtual rock on/around the physical print (marker plane ≠ object hull). */
+/** globalPos/globalRot are physical Z-up (X,Y table; Z up), mapped to A-Frame Y-up when applied. */
 const AR_CALIBRATION_STORAGE_KEY = 'psyche-ar-alignment-v1';
 const DEFAULT_AR_CALIBRATION = {
     globalScale: 2.2,
-    globalPos: { x: -1.13, y: 0.3, z: 0.1 } as { x: number; y: number; z: number },
+    /** Physical space: X,Y on table; Z up (vertical). */
+    globalPos: { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number },
     globalRot: { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number },
-    /** Multiplies Z scale only — use when the print looks thicker/thinner along view depth than the GLB. */
+    /** Multiplies scale along physical Z (vertical) — maps to A-Frame Y scale. */
     depthScale: 1,
     /**
      * Lerp toward raw AR marker pose each frame (lower = less shake, slightly more motion lag).
      * Typical range ~0.08–0.28.
      */
     /** Lower = steadier overlay, more lag when moving the phone (stability-first). */
-    trackingSmooth: 0.07,
+    trackingSmooth: 0.045,
+    /**
+     * Shift content toward the average of table barcodes in config.json (1,3,4,6)
+     * so the load point is the center of the floor marker layout, not marker 0.
+     */
+    useTableCentroidBias: true,
+    /** Multiplier on the cluster translation (negative flips direction if needed). */
+    clusterBiasStrength: 1,
+    /** Red spheres at each pose in config.json (marker-0 space) to verify layout. */
+    showArMarkerDebugDots: true,
 };
+
+function mergeCalibrationPartial(p: Partial<typeof DEFAULT_AR_CALIBRATION>): typeof DEFAULT_AR_CALIBRATION {
+    return {
+        globalScale: typeof p.globalScale === 'number' ? p.globalScale : DEFAULT_AR_CALIBRATION.globalScale,
+        globalPos:
+            p.globalPos && typeof p.globalPos.x === 'number'
+                ? { x: p.globalPos.x, y: p.globalPos.y, z: p.globalPos.z }
+                : { ...DEFAULT_AR_CALIBRATION.globalPos },
+        globalRot:
+            p.globalRot && typeof p.globalRot.x === 'number'
+                ? { x: p.globalRot.x, y: p.globalRot.y, z: p.globalRot.z }
+                : { ...DEFAULT_AR_CALIBRATION.globalRot },
+        depthScale: typeof p.depthScale === 'number' ? p.depthScale : DEFAULT_AR_CALIBRATION.depthScale,
+        trackingSmooth:
+            typeof p.trackingSmooth === 'number' ? p.trackingSmooth : DEFAULT_AR_CALIBRATION.trackingSmooth,
+        useTableCentroidBias:
+            typeof p.useTableCentroidBias === 'boolean'
+                ? p.useTableCentroidBias
+                : typeof (p as { useSurfaceClusterBias?: boolean }).useSurfaceClusterBias === 'boolean'
+                  ? (p as { useSurfaceClusterBias: boolean }).useSurfaceClusterBias
+                  : DEFAULT_AR_CALIBRATION.useTableCentroidBias,
+        clusterBiasStrength:
+            typeof p.clusterBiasStrength === 'number'
+                ? p.clusterBiasStrength
+                : DEFAULT_AR_CALIBRATION.clusterBiasStrength,
+        showArMarkerDebugDots:
+            typeof p.showArMarkerDebugDots === 'boolean'
+                ? p.showArMarkerDebugDots
+                : DEFAULT_AR_CALIBRATION.showArMarkerDebugDots,
+    };
+}
 
 function readStoredArCalibration(): typeof DEFAULT_AR_CALIBRATION {
     if (typeof window === 'undefined') return DEFAULT_AR_CALIBRATION;
@@ -58,20 +113,7 @@ function readStoredArCalibration(): typeof DEFAULT_AR_CALIBRATION {
         const raw = localStorage.getItem(AR_CALIBRATION_STORAGE_KEY);
         if (!raw) return DEFAULT_AR_CALIBRATION;
         const p = JSON.parse(raw) as Partial<typeof DEFAULT_AR_CALIBRATION>;
-        return {
-            globalScale: typeof p.globalScale === 'number' ? p.globalScale : DEFAULT_AR_CALIBRATION.globalScale,
-            globalPos:
-                p.globalPos && typeof p.globalPos.x === 'number'
-                    ? { x: p.globalPos.x, y: p.globalPos.y, z: p.globalPos.z }
-                    : { ...DEFAULT_AR_CALIBRATION.globalPos },
-            globalRot:
-                p.globalRot && typeof p.globalRot.x === 'number'
-                    ? { x: p.globalRot.x, y: p.globalRot.y, z: p.globalRot.z }
-                    : { ...DEFAULT_AR_CALIBRATION.globalRot },
-            depthScale: typeof p.depthScale === 'number' ? p.depthScale : DEFAULT_AR_CALIBRATION.depthScale,
-            trackingSmooth:
-                typeof p.trackingSmooth === 'number' ? p.trackingSmooth : DEFAULT_AR_CALIBRATION.trackingSmooth,
-        };
+        return mergeCalibrationPartial(p);
     } catch {
         return DEFAULT_AR_CALIBRATION;
     }
@@ -106,17 +148,49 @@ const App = () => {
     const [globalRot, setGlobalRot] = useState({ ...arInitial.globalRot });
     const [depthScale, setDepthScale] = useState(arInitial.depthScale);
     const [trackingSmooth, setTrackingSmooth] = useState(arInitial.trackingSmooth);
+    const [useTableCentroidBias, setUseTableCentroidBias] = useState(arInitial.useTableCentroidBias);
+    const [clusterBiasStrength, setClusterBiasStrength] = useState(arInitial.clusterBiasStrength);
+    const [arTableCentroid, setArTableCentroid] = useState({ x: 0, y: 0, z: 0 });
+    const [arMarkerDebugFrame, setArMarkerDebugFrame] = useState<Marker4PlaneDebugFrame | null>(null);
+    const [showArMarkerDebugDots, setShowArMarkerDebugDots] = useState(arInitial.showArMarkerDebugDots);
 
     useEffect(() => {
         try {
             localStorage.setItem(
                 AR_CALIBRATION_STORAGE_KEY,
-                JSON.stringify({ globalScale, globalPos, globalRot, depthScale, trackingSmooth })
+                JSON.stringify({
+                    globalScale,
+                    globalPos,
+                    globalRot,
+                    depthScale,
+                    trackingSmooth,
+                    useTableCentroidBias,
+                    clusterBiasStrength,
+                    showArMarkerDebugDots,
+                })
             );
         } catch {
             /* ignore */
         }
-    }, [globalScale, globalPos, globalRot, depthScale, trackingSmooth]);
+    }, [globalScale, globalPos, globalRot, depthScale, trackingSmooth, useTableCentroidBias, clusterBiasStrength, showArMarkerDebugDots]);
+
+    /** Physical Z-up calibration → A-Frame Y-up; origin is centered on table markers (1,3,4,6). */
+    const sceneCalibPosition = useMemo(() => {
+        const base = physicalOffsetToScene(globalPos);
+        // Always center runtime origin on the table centroid so 0,0,0 matches physical table center.
+        const bx = arTableCentroid.x;
+        const by = arTableCentroid.y;
+        const bz = arTableCentroid.z;
+        return { x: base.x + bx, y: base.y + by, z: base.z + bz };
+    }, [globalPos, arTableCentroid]);
+
+    const sceneCalibRotationStr = useMemo(() => physicalEulerDegreesToSceneRotationString(globalRot), [globalRot]);
+
+    const sceneCalibScaleStr = useMemo(
+        () => physicalScaleToSceneString(globalScale, depthScale),
+        [globalScale, depthScale]
+    );
+
     const [roverReady, setRoverReady] = useState(false);
     const [waypoints, setWaypoints] = useState<{ id: string; x: number; y: number; z: number; nx: number; ny: number; nz: number }[]>([]);
     const lastDirectionRef = useRef<[number, number]>([0, 1]);
@@ -131,6 +205,32 @@ const App = () => {
     const playBtnRef = useRef<HTMLButtonElement | null>(null);
     const arBtnRef = useRef<HTMLButtonElement | null>(null);
     const diffBtnRefs = [useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null)];
+
+    /** Average position of table barcodes (1,3,4,6) from config — centers content on the floor marker layout. */
+    useEffect(() => {
+        if (gameState !== 'AR_MODE') return;
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await fetch(`${import.meta.env.BASE_URL}config.json`);
+                const json = (await res.json()) as AreaConfigJson;
+                const c = averageTranslationForBarcodes(json, [...AR_TABLE_BARCODE_IDS]);
+                const dbg = marker4PlaneDebugFrame(json);
+                if (!cancelled) {
+                    setArTableCentroid(c);
+                    setArMarkerDebugFrame(dbg);
+                }
+            } catch {
+                if (!cancelled) {
+                    setArTableCentroid({ x: 0, y: 0, z: 0 });
+                    setArMarkerDebugFrame(null);
+                }
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [gameState]);
 
     /** Initialize WASM and load asteroid collision mesh from GLB. */
     useEffect(() => {
@@ -669,9 +769,10 @@ const App = () => {
                 <>
                     {/* AR Scene with Camera Access */}
                     <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0 }}>
+                        {/* AR.js ↔ ARToolKit: see index.html comment (matrix mode, Hamming63, border 0.24 → patternRatio 0.52). */}
                         <a-scene
                             embedded 
-                            arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63;"
+                            arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63; patternRatio: 0.52; labelingMode: black_region;"
                             color-space="sRGB"
                             renderer="colorManagement: true"
                             vr-mode-ui="enabled: false"
@@ -689,13 +790,64 @@ const App = () => {
                             <a-entity
                                 ar-smooth-anchor={
                                     `target: #psyche-ar-area-marker; positionLerp: ${trackingSmooth}; ` +
-                                    `rotationLerp: ${(trackingSmooth * 0.85).toFixed(4)}; scaleLerp: ${(trackingSmooth * 0.95).toFixed(4)}`
+                                    `rotationLerp: ${(trackingSmooth * 0.5).toFixed(4)}; scaleLerp: ${(trackingSmooth * 0.7).toFixed(4)}; ` +
+                                    `maxJump: 0.1; positionBlendFrames: 10; scaleBlendFrames: 5`
                                 }
                             >
+                                {/* Red cylinders: config relative to marker 4 (identity) — parent at origin; legacy configs use translation-only offset. Not affected by calibration. */}
+                                {showArMarkerDebugDots && arMarkerDebugFrame && (
+                                    <a-entity
+                                        position={`${arMarkerDebugFrame.t4.x} ${arMarkerDebugFrame.t4.y} ${arMarkerDebugFrame.t4.z}`}
+                                        rotation={arMarkerDebugFrame.parentRotationStr}
+                                    >
+                                        {/* Surface verification overlays: red square plates (2x2 inches = 0.0508m) on markers 0,2,5,7. */}
+                                        {arMarkerDebugFrame.entries
+                                            .filter((m) => (AR_SURFACE_BARCODE_IDS as readonly number[]).includes(m.id))
+                                            .map((m) => {
+                                                const plateSize = 0.0508;
+                                                const plateThick = 0.004;
+                                                // Some marker normals can be inverted by pose ambiguity.
+                                                // Flip to the up-facing direction so overlay sits above the marker.
+                                                const ux = m.ny >= 0 ? m.nx : -m.nx;
+                                                const uy = m.ny >= 0 ? m.ny : -m.ny;
+                                                const uz = m.ny >= 0 ? m.nz : -m.nz;
+                                                const lift = plateThick * 0.5 + 0.01;
+                                                const px = m.x + ux * lift;
+                                                const py = m.y + uy * lift;
+                                                const pz = m.z + uz * lift;
+                                                const rotStr = rotationFromNormal(ux, uy, uz);
+                                                return (
+                                                    <a-entity
+                                                        key={`ar-surface-square-${m.id}`}
+                                                        position={`${px} ${py} ${pz}`}
+                                                        rotation={rotStr}
+                                                    >
+                                                        <a-box
+                                                            width={plateSize}
+                                                            height={plateThick}
+                                                            depth={plateSize}
+                                                            color="#ff1f1f"
+                                                            material="shader: flat; opacity: 0.9; transparent: true"
+                                                        />
+                                                        <a-text
+                                                            value={`S${m.id}`}
+                                                            position={`0 ${plateThick + 0.02} 0`}
+                                                            rotation="90 0 0"
+                                                            align="center"
+                                                            color="#ffffff"
+                                                            width="8"
+                                                            scale="0.32 0.32 0.32"
+                                                        />
+                                                    </a-entity>
+                                                );
+                                            })}
+                                    </a-entity>
+                                )}
+
                                 <a-entity
-                                    position={`${globalPos.x} ${globalPos.y} ${globalPos.z}`}
-                                    rotation={`${globalRot.x} ${globalRot.y} ${globalRot.z}`}
-                                    scale={`${globalScale} ${globalScale} ${globalScale * depthScale}`}
+                                    position={`${sceneCalibPosition.x} ${sceneCalibPosition.y} ${sceneCalibPosition.z}`}
+                                    rotation={sceneCalibRotationStr}
+                                    scale={sceneCalibScaleStr}
                                 >
                                     <a-entity position="0 0 0" rotation="0 0 0">
                                         <a-gltf-model
@@ -757,16 +909,28 @@ const App = () => {
                         </a-scene>
                     </div>
 
-                    <div id="ui-overlay" style={{ display: 'block' }}>
+                    <div
+                        id="ui-overlay"
+                        style={{
+                            position: 'fixed',
+                            inset: 0,
+                            zIndex: 40,
+                            pointerEvents: 'none',
+                        }}
+                    >
+                        {/* Pass-through overlay: AR canvas sits under this layer; only children with pointerEvents:auto receive taps. */}
                         {/* Scan prompt intentionally hidden for clean AR calibration/play view. */}
 
                         <button
+                            type="button"
                             onClick={() => setShowCalibrationPanel(v => !v)}
                             style={{
                                 position: 'fixed',
                                 left: 12,
                                 bottom: 12,
-                                zIndex: 30,
+                                zIndex: 50,
+                                pointerEvents: 'auto',
+                                touchAction: 'manipulation',
                                 border: 'none',
                                 borderRadius: 8,
                                 padding: '8px 10px',
@@ -784,8 +948,11 @@ const App = () => {
                                     position: 'fixed',
                                     left: 12,
                                     bottom: 52,
-                                    zIndex: 30,
+                                    zIndex: 50,
                                     width: 280,
+                                    pointerEvents: 'auto',
+                                    touchAction: 'manipulation',
+                                    WebkitOverflowScrolling: 'touch',
                                     background: 'rgba(0,0,0,0.85)',
                                     color: '#fff',
                                     padding: '12px 16px',
@@ -795,15 +962,67 @@ const App = () => {
                                     gap: 12,
                                     fontFamily: 'sans-serif',
                                     maxHeight: '70vh',
-                                    overflowY: 'auto'
+                                    overflowY: 'auto',
                                 }}
                             >
                                 <h3 style={{ margin: 0, fontSize: 16 }}>Align to physical print</h3>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={showArMarkerDebugDots}
+                                            onChange={(e) => setShowArMarkerDebugDots(e.target.checked)}
+                                            style={{ width: 16, height: 16 }}
+                                        />
+                                        Show marker cylinders + IDs (config 0–7)
+                                    </label>
+                                </div>
                                 <p style={{ margin: 0, fontSize: 11, lineHeight: 1.35, opacity: 0.85 }}>
-                                    Markers on the floor and on the sloped print can make the solver “fight” and look shaky.
-                                    Position/rotation/scale match the light-gray print; tracking smooth reduces jitter (lower = steadier).
-                                    Values save in this browser.
+                                    Sliders use a <strong>physical Z-up</strong> frame (X,Y on the table; Z vertical). The app
+                                    maps that to A-Frame’s Y-up scene. Tracking is rooted at marker 0. Table markers 1,3,4,6
+                                    define a ring — their average in <code style={{ fontSize: 10 }}>config.json</code> shifts the
+                                    load point to that layout’s center. Values save in this browser.
                                 </p>
+
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                    <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={useTableCentroidBias}
+                                            onChange={(e) => setUseTableCentroidBias(e.target.checked)}
+                                            style={{ width: 18, height: 18 }}
+                                        />
+                                        Center on table markers (1, 3, 4, 6)
+                                    </label>
+                                </div>
+                                <p style={{ margin: 0, fontSize: 10, lineHeight: 1.3, opacity: 0.75 }}>
+                                    Table centroid from config: ({arTableCentroid.x.toFixed(2)},{' '}
+                                    {arTableCentroid.y.toFixed(2)},{arTableCentroid.z.toFixed(2)}) — strength scales this shift.
+                                    Negative strength if it moves the wrong way.
+                                </p>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
+                                        Centroid bias strength: {clusterBiasStrength.toFixed(2)}
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 6 }}>
+                                        <button
+                                            type="button"
+                                            onClick={() => setClusterBiasStrength(s => Math.max(-1.5, s - 0.1))}
+                                            style={{ flex: 1, padding: 6 }}
+                                        >
+                                            −
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setClusterBiasStrength(s => Math.min(1.5, s + 0.1))}
+                                            style={{ flex: 1, padding: 6 }}
+                                        >
+                                            +
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <hr style={{ borderColor: 'rgba(255,255,255,0.2)', width: '100%', margin: '4px 0' }} />
 
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
@@ -812,7 +1031,7 @@ const App = () => {
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button
                                             type="button"
-                                            onClick={() => setTrackingSmooth(t => Math.max(0.04, t - 0.02))}
+                                            onClick={() => setTrackingSmooth(t => Math.max(0.02, t - 0.02))}
                                             style={{ flex: 1, padding: 6 }}
                                         >
                                             −
@@ -847,7 +1066,7 @@ const App = () => {
 
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Position X: {globalPos.x.toFixed(2)}
+                                        Position X (table): {globalPos.x.toFixed(2)}
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalPos(p => ({...p, x: p.x - 0.05}))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -856,7 +1075,7 @@ const App = () => {
                                 </div>
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Position Y (up/down — lower to sit on print): {globalPos.y.toFixed(2)}
+                                        Position Y (table, in-plane): {globalPos.y.toFixed(2)}
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalPos(p => ({...p, y: p.y - 0.05}))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -865,7 +1084,7 @@ const App = () => {
                                 </div>
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Position Z: {globalPos.z.toFixed(2)}
+                                        Position Z (up — lift/sink vs. table): {globalPos.z.toFixed(2)}
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalPos(p => ({...p, z: p.z - 0.05}))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -877,7 +1096,7 @@ const App = () => {
 
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Rotation X (tilt forward/back): {globalRot.x.toFixed(0)}°
+                                        Rotation X (tilt about table X): {globalRot.x.toFixed(0)}°
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalRot(r => ({ ...r, x: r.x - 5 }))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -886,7 +1105,7 @@ const App = () => {
                                 </div>
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Rotation Y (spin): {globalRot.y.toFixed(0)}°
+                                        Rotation Y (tilt about table Y): {globalRot.y.toFixed(0)}°
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalRot(r => ({ ...r, y: r.y - 5 }))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -895,7 +1114,7 @@ const App = () => {
                                 </div>
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Rotation Z (roll): {globalRot.z.toFixed(0)}°
+                                        Rotation Z (yaw about vertical / Z up): {globalRot.z.toFixed(0)}°
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setGlobalRot(r => ({ ...r, z: r.z - 5 }))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -905,7 +1124,7 @@ const App = () => {
 
                                 <div>
                                     <label style={{ display: 'block', fontSize: 13, marginBottom: 4 }}>
-                                        Depth scale (Z only — thicker/thinner vs. camera): {depthScale.toFixed(2)}
+                                        Depth scale (physical Z — stretch vertical vs. uniform): {depthScale.toFixed(2)}
                                     </label>
                                     <div style={{ display: 'flex', gap: 6 }}>
                                         <button onClick={() => setDepthScale(d => Math.max(0.2, d - 0.05))} style={{ flex: 1, padding: 6 }}>-</button>
@@ -925,6 +1144,9 @@ const App = () => {
                                         setGlobalRot({ ...DEFAULT_AR_CALIBRATION.globalRot });
                                         setDepthScale(DEFAULT_AR_CALIBRATION.depthScale);
                                         setTrackingSmooth(DEFAULT_AR_CALIBRATION.trackingSmooth);
+                                        setUseTableCentroidBias(DEFAULT_AR_CALIBRATION.useTableCentroidBias);
+                                        setClusterBiasStrength(DEFAULT_AR_CALIBRATION.clusterBiasStrength);
+                                        setShowArMarkerDebugDots(DEFAULT_AR_CALIBRATION.showArMarkerDebugDots);
                                     }}
                                     style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.3)', background: 'rgba(255,255,255,0.08)', color: '#fff', cursor: 'pointer' }}
                                 >
@@ -938,10 +1160,11 @@ const App = () => {
                             <>
                                 <div 
                                     style={{
-                                        position: 'absolute',
-                                        top: 0, left: 0, width: '100%', height: '100%',
-                                        zIndex: 10,
-                                        pointerEvents: 'auto'
+                                        position: 'fixed',
+                                        inset: 0,
+                                        zIndex: 41,
+                                        pointerEvents: 'auto',
+                                        touchAction: 'none',
                                     }}
                                     onPointerDown={handleRaycastFire}
                                 >
@@ -970,18 +1193,21 @@ const App = () => {
                                     </div>
                                 </div>
 
-                                <div id="score-display" style={{ zIndex: 20 }}>
+                                <div id="score-display" style={{ zIndex: 42, pointerEvents: 'none' }}>
                                     SCORE <span id="score">{score}</span>
                                 </div>
 
-                                <div className="mode-ui" style={{ zIndex: 20 }}>
+                                <div className="mode-ui" style={{ zIndex: 42, pointerEvents: 'none' }}>
                                     <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${energy}%` }} /></div></div>
                                     <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
                                 </div>
                             </>
                         )}
 
-                        <div id="controls">
+                        <div
+                            id="controls"
+                            style={{ pointerEvents: showCalibrationPanel ? 'none' : 'auto', zIndex: 50 }}
+                        >
                             <div
                                 className="dpad-circle"
                                 onPointerDown={(e) => { e.preventDefault(); (e.target as HTMLElement).setPointerCapture(e.pointerId); updateDpadFromPointer(e); }}
