@@ -29,12 +29,12 @@ const generateStars = (count: number) => {
     let seed = 42;
     const rand = () => { seed = (seed * 1664525 + 1013904223) & 0xffffffff; return (seed >>> 0) / 0xffffffff; };
     return Array.from({ length: count }, (_, i) => {
-        const phi    = Math.acos(2 * rand() - 1);       // uniform latitude (0..π)
-        const theta  = 2 * Math.PI * rand();             // uniform longitude (0..2π)
+        const phi = Math.acos(2 * rand() - 1);       // uniform latitude (0..π)
+        const theta = 2 * Math.PI * rand();             // uniform longitude (0..2π)
         const radius = RADIUS + (rand() - 0.5) * 24;    // ±12 units of depth jitter
-        const x    = Math.sin(phi) * Math.cos(theta) * radius;
+        const x = Math.sin(phi) * Math.cos(theta) * radius;
         const yPos = Math.cos(phi) * radius;
-        const z    = Math.sin(phi) * Math.sin(theta) * radius;
+        const z = Math.sin(phi) * Math.sin(theta) * radius;
         return {
             id: i,
             pos: `${x.toFixed(2)} ${yPos.toFixed(2)} ${z.toFixed(2)}`,
@@ -55,6 +55,21 @@ const WAYPOINT_DIRECTIONS: [number, number, number][] = [
     [0.707, 0.707, 0], [-0.707, 0.5, -0.5], [0, 0, -1], [0.5, -0.707, -0.5],
 ];
 
+const INTRO_CONTENT: Record<string, { welcome: string; description: string }> = {
+    easy: {
+        welcome: 'Welcome to Story Mode',
+        description: 'Explore the surface of asteroid Psyche with complete freedom. Pilot the rover across the terrain and drive over samples to collect them. If you ever get lost, follow the indicator arrow to the nearest sample.',
+    },
+    normal: {
+        welcome: 'Welcome to Normal Mode',
+        description: "Explore Psyche with the energy system in play. Your rover's battery drains as you roam — collect samples efficiently before power runs out. Follow the indicator arrow if you lose track of your next sample. The mission ends when you collect all 20 samples or run out of energy.",
+    },
+    hard: {
+        welcome: 'Welcome to Hard Mode',
+        description: "Psyche is at its most unforgiving. Energy drains your battery, and craters larger than the rover are scattered across the surface — driving into one cuts your speed in half. Navigate carefully, collect samples quickly, and use the indicator arrow wisely. The mission ends when you collect all 20 samples or run out of energy.",
+    },
+};
+
 const App = () => {
     const [gameState, setGameState] = useState('MENU');
     const [score, setScore] = useState(0);
@@ -73,9 +88,17 @@ const App = () => {
     // Energy meter (0..100) - skeleton only
     const [energy, setEnergy] = useState(100);
     const [showDifficulty, setShowDifficulty] = useState(false);
-    
+    const [showCredits, setShowCredits] = useState(false);
+    const [showIntroPopup, setShowIntroPopup] = useState(false);
+    const [introPopupCanClose, setIntroPopupCanClose] = useState(false);
+    const showIntroPopupRef = useRef(false);
+    showIntroPopupRef.current = showIntroPopup;
+    const introLockoutTimerRef = useRef<number | null>(null);
+    const [showEndScreen, setShowEndScreen] = useState(false);
+    const [endReason, setEndReason] = useState<'complete' | 'energy'>('complete');
+
     // Centralized difficulty configuration placeholder.
-     
+
     const difficultyConfig: Record<string, any> = {
         easy: { spawnCount: 4, scoreMultiplier: 0.8 },
         normal: { spawnCount: 6, scoreMultiplier: 1.0 },
@@ -97,8 +120,9 @@ const App = () => {
     // Keyboard navigation
     const playBtnRef = useRef<HTMLButtonElement | null>(null);
     const arBtnRef = useRef<HTMLButtonElement | null>(null);
+    const creditsBtnRef = useRef<HTMLButtonElement | null>(null);
     const diffBtnRefs = [useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null)];
-	const [waypointPopup, setWaypointPopup] = useState<{title: string; body?: string; image?: string;} | null>(null);
+    const [waypointPopup, setWaypointPopup] = useState<{ title: string; body?: string; image?: string; } | null>(null);
 
     /** Initialize WASM and load asteroid collision mesh from GLB. */
     useEffect(() => {
@@ -109,7 +133,7 @@ const App = () => {
                 const response = await fetch('./models/AsteroidPsyche_Collision.glb');
                 const arrayBuffer = await response.arrayBuffer();
                 const bytes = new Uint8Array(arrayBuffer);
-                
+
                 console.log(`📦 Loading collision mesh: ${bytes.length} bytes`);
                 await load_collision_mesh(bytes);
                 console.log("✅ Collision mesh loaded!");
@@ -118,9 +142,25 @@ const App = () => {
                 console.error("❌ Failed to initialize:", e);
             }
         };
-        
+
         initRust();
     }, []);
+
+    const closeIntroPopup = () => {
+        setShowIntroPopup(false);
+        setIntroPopupCanClose(false);
+    };
+
+    const returnToMenu = () => {
+        setGameState('MENU');
+        setShowEndScreen(false);
+        setShowIntroPopup(false);
+        setIntroPopupCanClose(false);
+        setSamplesCollected(0);
+        setScore(0);
+        energyRef.current = 100;
+        setEnergy(100);
+    };
 
     const handleStart = async (mode: string, chosenDifficulty?: 'easy' | 'normal' | 'hard') => {
         if (chosenDifficulty) setDifficulty(chosenDifficulty);
@@ -128,6 +168,10 @@ const App = () => {
         if (mode === 'web_game') {
             console.log("Starting WEB GAME MODE", chosenDifficulty);
             setGameState('WEB_GAME');
+            if (introLockoutTimerRef.current) clearTimeout(introLockoutTimerRef.current);
+            setShowIntroPopup(true);
+            setIntroPopupCanClose(false);
+            introLockoutTimerRef.current = window.setTimeout(() => setIntroPopupCanClose(true), 3500);
         } else if (mode === 'ar') {
             console.log("Starting AR MODE");
             setGameState('AR_MODE');
@@ -434,15 +478,17 @@ const App = () => {
      */
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && showDifficulty) {
-                setShowDifficulty(false);
+            if (e.key === 'Escape' || e.key === 'Enter') {
+                if (showDifficulty) setShowDifficulty(false);
+                if (showCredits) setShowCredits(false);
+                if (showIntroPopup && introPopupCanClose) closeIntroPopup();
             }
         };
 
         window.addEventListener('keydown', onKey);
 
         return () => window.removeEventListener('keydown', onKey);
-    }, [showDifficulty]);
+    }, [showDifficulty, showCredits, showIntroPopup, introPopupCanClose]);
 
     useEffect(() => {
         if (showDifficulty) {
@@ -454,18 +500,29 @@ const App = () => {
         }
     }, [showDifficulty]);
 
+    const creditsOpenedOnce = useRef(false);
+    useEffect(() => {
+        if (showCredits) {
+            creditsOpenedOnce.current = true;
+        } else if (creditsOpenedOnce.current) {
+            // return focus to Credits button when closing (not on initial mount)
+            setTimeout(() => creditsBtnRef.current?.focus(), 50);
+        }
+    }, [showCredits]);
+
     /**
      * Trap Tab focus inside the start screen when on MENU and modal is closed.
      * This prevents Tab from moving focus out of the app's start UI.
      */
     useEffect(() => {
-        if (gameState !== 'MENU' || showDifficulty) return;
+        if (gameState !== 'MENU' || showDifficulty || showCredits) return;
         const onKey = (e: KeyboardEvent) => {
             if (e.key !== 'Tab') return;
             e.preventDefault();
             const order: HTMLElement[] = [];
             if (playBtnRef.current && !playBtnRef.current.hasAttribute('disabled')) order.push(playBtnRef.current);
             if (arBtnRef.current) order.push(arBtnRef.current);
+            if (creditsBtnRef.current) order.push(creditsBtnRef.current);
             if (order.length === 0) return;
 
             const active = document.activeElement as HTMLElement;
@@ -482,8 +539,8 @@ const App = () => {
 
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [gameState, showDifficulty]);
-	
+    }, [gameState, showDifficulty, showCredits]);
+
     /** Aligns rover to surface normal with forward direction projected onto tangent plane. */
     const updateRoverRotation = (rover: any, x: number, y: number, z: number, dirX: number, dirY: number, dirZ: number) => {
         const THREE = (window as any).THREE;
@@ -541,9 +598,9 @@ const App = () => {
             const [padX, padY] = dpadInputRef.current;
             let inputX = padX;
             let inputY = padY;
-            if (k.has('w') || k.has('arrowup'))    inputY += 1;
-            if (k.has('s') || k.has('arrowdown'))  inputY -= 1;
-            if (k.has('a') || k.has('arrowleft'))  inputX -= 1;
+            if (k.has('w') || k.has('arrowup')) inputY += 1;
+            if (k.has('s') || k.has('arrowdown')) inputY -= 1;
+            if (k.has('a') || k.has('arrowleft')) inputX -= 1;
             if (k.has('d') || k.has('arrowright')) inputX += 1;
 
             inputX = Math.max(-1, Math.min(1, inputX));
@@ -634,10 +691,22 @@ const App = () => {
         }
     }, [gameState, meshLoaded]);
 
+    /** Trigger end screen when all samples collected or energy depleted. */
+    useEffect(() => {
+        if (gameState !== 'WEB_GAME' || showEndScreen) return;
+        if (samplesCollected >= modeCfg.spawnSamples) {
+            setEndReason('complete');
+            setShowEndScreen(true);
+        } else if (modeCfg.energyEnabled && energy <= 0) {
+            setEndReason('energy');
+            setShowEndScreen(true);
+        }
+    }, [samplesCollected, energy, gameState, showEndScreen]);
+
     /** Keyboard listeners and rover init: snap to surface before revealing scene. */
     useEffect(() => {
         if ((gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') || !meshLoaded) {
-            return () => {};
+            return () => { };
         }
 
         const initRover = () => {
@@ -669,24 +738,25 @@ const App = () => {
 
         const t = setTimeout(initRover, 50);
 
-        const validKeys = new Set(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright']);
+        const validKeys = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 
-            const onKeyDown = (e: KeyboardEvent) => {
-                const key = e.key.toLowerCase();
-                if (!validKeys.has(key)) return;
-                e.preventDefault();
-                keysHeld.current.add(key);
-                if (moveLoopId.current === null) {
-                    moveLoopId.current = requestAnimationFrame(movementLoop);
-                }
-            };
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (showIntroPopupRef.current) return;
+            const key = e.key.toLowerCase();
+            if (!validKeys.has(key)) return;
+            e.preventDefault();
+            keysHeld.current.add(key);
+            if (moveLoopId.current === null) {
+                moveLoopId.current = requestAnimationFrame(movementLoop);
+            }
+        };
 
-            const onKeyUp = (e: KeyboardEvent) => {
-                keysHeld.current.delete(e.key.toLowerCase());
-            };
+        const onKeyUp = (e: KeyboardEvent) => {
+            keysHeld.current.delete(e.key.toLowerCase());
+        };
 
-            window.addEventListener('keydown', onKeyDown);
-            window.addEventListener('keyup', onKeyUp);
+        window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('keyup', onKeyUp);
 
         return () => {
             clearTimeout(t);
@@ -778,6 +848,7 @@ const App = () => {
                             {meshLoaded ? 'Launch Mission' : 'Loading...'}
                         </button>
                         <button id="start-button" ref={arBtnRef} onClick={() => handleStart('ar')}>AR Experience</button>
+                        <button id="credits-button" ref={creditsBtnRef} onClick={() => setShowCredits(true)}>Credits</button>
                     </div>
                     <div className={`difficulty-overlay ${showDifficulty ? 'open' : 'closed'}`} onClick={() => setShowDifficulty(false)}>
                         <div className="difficulty-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-hidden={!showDifficulty}>
@@ -797,10 +868,46 @@ const App = () => {
                                     refs[next].current?.focus();
                                 }
                             }}>
-                                <button ref={diffBtnRefs[0]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game','easy'); }}>Easy</button>
-                                <button ref={diffBtnRefs[1]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game','normal'); }}>Normal</button>
-                                <button ref={diffBtnRefs[2]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game','hard'); }}>Hard</button>
+                                <button ref={diffBtnRefs[0]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game', 'easy'); }}>Easy</button>
+                                <button ref={diffBtnRefs[1]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game', 'normal'); }}>Normal</button>
+                                <button ref={diffBtnRefs[2]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game', 'hard'); }}>Hard</button>
                             </div>
+                        </div>
+                    </div>
+                    <div className={`credits-overlay ${showCredits ? 'open' : 'closed'}`} onClick={() => setShowCredits(false)}>
+                        <div className="credits-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-hidden={!showCredits}>
+                            <h2 className="credits-title">Credits</h2>
+
+                            <section className="credits-section">
+                                <h3 className="credits-section-heading">Creators</h3>
+                                <ul className="credits-list">
+                                    <li>Matthew Andrews — Systems Programmer</li>
+                                    <li>Brian Devaney — Technical Director</li>
+                                    <li>Methsiri Faris — AR Engineer</li>
+                                    <li>Evelyn Giordano — Technical Artist</li>
+                                    <li>Nathaniel Wilson — Gameplay Programmer</li>
+                                </ul>
+                            </section>
+
+                            <section className="credits-section">
+                                <h3 className="credits-section-heading">Sponsors</h3>
+                                <ul className="credits-list">
+                                    <li>NASA Psyche Mission</li>
+                                    <li>Cassie Bowman — Arizona State University </li>
+                                    <li>Alejandro Gomez — University of Arkansas</li>
+                                </ul>
+                            </section>
+
+                            <section className="credits-section">
+                                <h3 className="credits-section-heading">Disclaimer</h3>
+                                <p className="credits-disclaimer">
+                                    This work was created in partial fulfillment of University of Arkansas Capstone Course “CSCE 49603 - Capstone II″. The work is a result of the Psyche Student Collaborations component of NASA’s Psyche Mission (https://psyche.ssl.berkeley.edu)
+                                    “Psyche: A Journey to a Metal World” [Contract number NNM16AA09C] is part of the NASA Discovery Program mission to solar system targets. Trade names and trademarks of ASU and NASA are used in this work for identification only.
+                                    Their usage does not constitute an official endorsement, either expressed or implied, by Arizona State University or National Aeronautics and Space Administration. The content is solely the responsibility of the authors and does not necessarily represent the official views of ASU or NASA.
+                                </p>
+                            </section>
+
+                            <button className="credits-close-btn" onClick={() => setShowCredits(false)}>Close</button>
                         </div>
                     </div>
                 </div>
@@ -822,8 +929,8 @@ const App = () => {
                             <a-entity id="ar-target" mindar-image-target="targetIndex: 0">
                                 {/* Asteroid - scaled for AR marker */}
                                 <a-entity position="0 0 0" rotation="0 0 0">
-                                    <a-gltf-model 
-                                        src="./models/AsteroidPsyche.glb" 
+                                    <a-gltf-model
+                                        src="./models/AsteroidPsyche.glb"
                                         scale="0.5 0.5 0.5"
                                         position="0 0 0"
                                     ></a-gltf-model>
@@ -831,8 +938,8 @@ const App = () => {
 
                                 {/* Rover on asteroid */}
                                 <a-entity id="rover" position="0 0.3 0" rotation="0 0 0">
-                                    <a-gltf-model 
-                                        src="./models/craft_racer.glb" 
+                                    <a-gltf-model
+                                        src="./models/craft_racer.glb"
                                         scale="0.05 0.05 0.05"
                                     ></a-gltf-model>
                                 </a-entity>
@@ -885,13 +992,13 @@ const App = () => {
                             background="color: #000011"
                         >
                             {/* Follow Camera */}
-                            <a-camera 
+                            <a-camera
                                 id="follow-camera"
                                 position="0 0 5"
-                                look-controls="enabled: false" 
+                                look-controls="enabled: false"
                                 wasd-controls="enabled: false"
                             ></a-camera>
-                            
+
                             {/* Helper markers */}
                             <a-sphere position="0 0 0" radius="0.2" color="yellow"></a-sphere>
                             <a-text value="ORIGIN" position="0 0.5 0" scale="1 1 1" color="yellow" align="center"></a-text>
@@ -920,28 +1027,28 @@ const App = () => {
                             </a-entity>
 
                             {/* VISUAL ASTEROID */}
-                            <a-entity 
-                                id="asteroid" 
+                            <a-entity
+                                id="asteroid"
                                 position="0 0 0"
                                 rotation="0 0 0"
                             >
-                                <a-gltf-model 
+                                <a-gltf-model
                                     id="asteroid-model"
-                                    src="./models/AsteroidPsyche.glb" 
+                                    src="./models/AsteroidPsyche.glb"
                                     scale="2.5 2.5 2.5"
                                     position="-3.75 -2.2 3.22"
                                 ></a-gltf-model>
                             </a-entity>
 
                             {/* COLLISION MESH - hidden (only used by Rust raycasting) */}
-                            <a-entity 
+                            <a-entity
                                 id="collision-viz"
                                 position="0 0 0"
                                 rotation="0 0 0"
                                 visible="false"
                             >
-                                <a-gltf-model 
-                                    src="./models/AsteroidPsyche_Collision.glb" 
+                                <a-gltf-model
+                                    src="./models/AsteroidPsyche_Collision.glb"
                                     scale="2.5 2.5 2.5"
                                     position="-3.75 -2.2 3.22"
                                 ></a-gltf-model>
@@ -1058,7 +1165,7 @@ const App = () => {
                                     /* Closes the popup on click */
                                     onClick={(e) => e.stopPropagation()}
                                 >
-                                
+
                                     {waypointPopup.image && (
                                         <div className="popup-image-panel">
                                             <img src={waypointPopup.image} alt="Waypoint visual" />
@@ -1074,6 +1181,73 @@ const App = () => {
 
                                         <div className="popup-hint">Click outside to close</div>
                                     </div>
+                                </div>
+                            </div>
+                        )}
+                        {/* END SCREEN */}
+                        {showEndScreen && (
+                            <div className="end-overlay" role="dialog" aria-modal="true">
+                                <div className="end-modal">
+                                    <h2 className="end-title">
+                                        {endReason === 'complete' ? 'Mission Complete!' : 'Out of Energy'}
+                                    </h2>
+                                    <p className="end-subtitle">
+                                        {endReason === 'complete'
+                                            ? 'All samples have been recovered from the surface of Psyche.'
+                                            : "Your rover's battery has been depleted. Mission over."}
+                                    </p>
+
+                                    <div className="end-stats">
+                                        <div className="end-stat">
+                                            <span className="end-stat-label">Samples Collected</span>
+                                            <span className="end-stat-value">{samplesCollected} / {modeCfg.spawnSamples}</span>
+                                        </div>
+                                        <div className="end-stat">
+                                            <span className="end-stat-label">Final Score</span>
+                                            <span className="end-stat-value">{score}</span>
+                                        </div>
+                                    </div>
+
+                                    <button className="end-menu-btn" onClick={returnToMenu}>
+                                        Return to Main Menu
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {/* INTRO POPUP */}
+                        {showIntroPopup && (
+                            <div
+                                className="intro-overlay"
+                                onClick={() => { if (introPopupCanClose) closeIntroPopup(); }}
+                                role="dialog"
+                                aria-modal="true"
+                            >
+                                <div className="intro-modal" onClick={(e) => e.stopPropagation()}>
+                                    <h2 className="intro-title">{INTRO_CONTENT[difficulty].welcome}</h2>
+
+                                    <div className="intro-section">
+                                        <h3 className="intro-section-heading">Controls</h3>
+                                        <div className="intro-controls-grid">
+                                            <span className="key-hint">W / A / S / D</span><span>Move rover</span>
+                                            <span className="key-hint">Arrow Keys</span><span>Move rover</span>
+                                            <span className="key-hint">D-pad</span><span>Move rover (mobile/touch)</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="intro-section">
+                                        <p className="intro-description">{INTRO_CONTENT[difficulty].description}</p>
+                                    </div>
+
+                                    <button
+                                        className={`intro-close-btn${introPopupCanClose ? '' : ' locked'}`}
+                                        onClick={() => { if (introPopupCanClose) closeIntroPopup(); }}
+                                        disabled={!introPopupCanClose}
+                                    >
+                                        {introPopupCanClose ? 'Begin Mission' : 'Reading...'}
+                                    </button>
+                                    {introPopupCanClose && (
+                                        <p className="intro-dismiss-hint">Press Enter or click outside to dismiss</p>
+                                    )}
                                 </div>
                             </div>
                         )}
