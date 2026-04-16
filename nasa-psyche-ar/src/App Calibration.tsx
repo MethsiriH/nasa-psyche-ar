@@ -12,12 +12,10 @@ type MarkerOffset = { x: number; y: number; z: number };
 type MarkerPoseSource = { byId: Record<number, number[]>; center?: MarkerOffset };
 
 const TABLE_MARKER_IDS = [1, 3, 4, 6] as const;
-const SURFACE_MARKER_IDS = [0, 2, 5, 7] as const;
-const ALL_MARKER_IDS = [...TABLE_MARKER_IDS, ...SURFACE_MARKER_IDS] as const;
 const MARKER_SIZE_METERS = 0.0508; // 2 inches
 
 function translationFromPose(elements: number[]): MarkerOffset {
-    return { x: elements[12], y: elements[13], z: elements[14] };                       
+    return { x: elements[12], y: elements[13], z: elements[14] };
 }
 
 function centerOffsetInMarkerLocalFromPose(elements: number[], centerGlobal: MarkerOffset): MarkerOffset {
@@ -52,16 +50,14 @@ function parseTablePosesFromReport(json: any): MarkerPoseSource | null {
     const markers = json?.markers;
     if (!markers || typeof markers !== 'object') return null;
     const byId: Record<number, number[]> = {};
-    for (const id of ALL_MARKER_IDS) {
+    for (const id of TABLE_MARKER_IDS) {
         const row = markers[String(id)];
         const pose = row?.poseMatrix;
         if (!Array.isArray(pose) || pose.length < 16) continue;
         byId[id] = pose;
     }
     // Use report only when all table marker poses are available.
-    for (const id of TABLE_MARKER_IDS) {
-        if (!byId[id]) return null;
-    }
+    if (Object.keys(byId).length !== TABLE_MARKER_IDS.length) return null;
     const c = json?.center_1346_m;
     const center =
         c && typeof c.x === 'number' && typeof c.y === 'number' && typeof c.z === 'number'
@@ -84,21 +80,17 @@ const App = () => {
     const [visibleIds, setVisibleIds] = useState<Set<number>>(new Set());
     const [anchorId, setAnchorId] = useState<number | null>(null);
     const anchorHoldTimeoutRef = useRef<number | null>(null);
-    const lastSeenMsRef = useRef<Record<number, number>>({});
 
     // Visual constants in marker-local units (marker width ~= 1 local unit).
     const modelLift = -2.12; // marker-local +Y (up)
     const modelBack = -1.2; // marker-local -Z (away from camera)
     const modelOriginDown = 1.5; // move mesh down without changing scale
-    const modelYawOffsetDeg = 180; // global asteroid yaw correction for all marker anchors
-    const showAsteroid = true;
+    const showAsteroid = false; // set true to re-enable asteroid model
     const markerPlaneOffset = 0.0; // keep exactly on marker plane for best alignment
     const markerOverlayWidth = 1.30; // widen left/right coverage
     const markerOverlayHeight = 0.88; // reduce opposite axis stretch
     const markerOverlayShiftX = 0.03; // nudge to right
     const markerOverlayShiftZ = -0.03; // nudge to top
-    const markerLostGraceMs = 700; // keep marker "visible" briefly to prevent flicker
-    const anchorSwitchDebounceMs = 450; // slower anchor switching for stable asteroid rendering
 
     useEffect(() => {
         if (!arActive) return;
@@ -108,32 +100,15 @@ const App = () => {
                 let byId: Record<number, number[]> = {};
                 let centerFromSource: MarkerOffset | undefined;
 
-                // Prefer surface report (contains 0..7 poses + table center) when available.
+                // Prefer latest recalibrated table report when available.
                 try {
-                    const sr = await fetch(`${import.meta.env.BASE_URL}surface_pair_report.json?ts=${Date.now()}`);
-                    if (sr.ok) {
-                        const report = await sr.json();
+                    const rr = await fetch(`${import.meta.env.BASE_URL}table_rotation_report.json?ts=${Date.now()}`);
+                    if (rr.ok) {
+                        const report = await rr.json();
                         const parsed = parseTablePosesFromReport(report);
                         if (parsed) {
                             byId = parsed.byId;
                             centerFromSource = parsed.center;
-                        }
-                    }
-                } catch {
-                    // Optional file; fallback below.
-                }
-
-                // Fallback to latest recalibrated table report.
-                try {
-                    if (Object.keys(byId).length === 0) {
-                        const rr = await fetch(`${import.meta.env.BASE_URL}table_rotation_report.json?ts=${Date.now()}`);
-                        if (rr.ok) {
-                            const report = await rr.json();
-                            const parsed = parseTablePosesFromReport(report);
-                            if (parsed) {
-                                byId = parsed.byId;
-                                centerFromSource = parsed.center;
-                            }
                         }
                     }
                 } catch {
@@ -162,7 +137,7 @@ const App = () => {
                     };
 
                 const next: Record<number, MarkerOffset> = {};
-                for (const id of ALL_MARKER_IDS) {
+                for (const id of TABLE_MARKER_IDS) {
                     const pose = byId[id];
                     if (!pose) continue;
                     const offM = centerOffsetInMarkerLocalFromPose(pose, centerGlobal);
@@ -187,7 +162,7 @@ const App = () => {
     // Track which barcode markers are currently visible, so we can choose ONE anchor for CENTER.
     useEffect(() => {
         if (!arActive) return;
-        const els = ALL_MARKER_IDS.map((id) => document.querySelector(`a-marker[type="barcode"][value="${id}"]`));
+        const els = TABLE_MARKER_IDS.map((id) => document.querySelector(`a-marker[type="barcode"][value="${id}"]`));
         const onFound = (id: number) => () => setVisibleIds((prev) => new Set(prev).add(id));
         const onLost = (id: number) => () =>
             setVisibleIds((prev) => {
@@ -197,8 +172,8 @@ const App = () => {
             });
 
         const cleanups: Array<() => void> = [];
-        for (let i = 0; i < ALL_MARKER_IDS.length; i++) {
-            const id = ALL_MARKER_IDS[i];
+        for (let i = 0; i < TABLE_MARKER_IDS.length; i++) {
+            const id = TABLE_MARKER_IDS[i];
             const el = els[i] as any;
             if (!el) continue;
             const f = onFound(id);
@@ -217,23 +192,13 @@ const App = () => {
     useEffect(() => {
         if (!arActive) return;
         const interval = window.setInterval(() => {
-            const now = Date.now();
             const next = new Set<number>();
-            for (const id of ALL_MARKER_IDS) {
+            for (const id of TABLE_MARKER_IDS) {
                 const el = document.querySelector(`a-marker[type="barcode"][value="${id}"]`) as any;
-                const isVisible = Boolean(el?.object3D?.visible);
-                if (isVisible) {
-                    lastSeenMsRef.current[id] = now;
-                    next.add(id);
-                    continue;
-                }
-                const lastSeen = lastSeenMsRef.current[id] ?? 0;
-                if (now - lastSeen <= markerLostGraceMs) {
-                    next.add(id);
-                }
+                if (el?.object3D?.visible) next.add(id);
             }
             setVisibleIds((prev) => (setsEqual(prev, next) ? prev : next));
-        }, 120);
+        }, 100);
         return () => window.clearInterval(interval);
     }, [arActive]);
 
@@ -255,17 +220,24 @@ const App = () => {
         // Keep current anchor if it's still visible.
         if (anchorId !== null && visibleIds.has(anchorId)) return;
 
-        const next = ALL_MARKER_IDS.find((id) => visibleIds.has(id)) ?? null;
+        const next = TABLE_MARKER_IDS.find((id) => visibleIds.has(id)) ?? null;
 
         // Debounce anchor changes a bit to avoid flicker.
         anchorHoldTimeoutRef.current = window.setTimeout(() => {
             setAnchorId(next);
             anchorHoldTimeoutRef.current = null;
-        }, anchorSwitchDebounceMs);
+        }, 250);
     }, [arActive, visibleIds, anchorId]);
 
-    // Stick to debounced anchor selection to avoid rapid reloading/flicker.
-    const activeAnchorId = anchorId;
+    // Immediate fallback so a single visible marker can render without waiting for debounce/state lag.
+    const activeAnchorId = (() => {
+        if (anchorId !== null && visibleIds.has(anchorId)) return anchorId;
+        if (visibleIds.has(4)) return 4;
+        for (const id of TABLE_MARKER_IDS) {
+            if (visibleIds.has(id)) return id;
+        }
+        return null;
+    })();
 
     return (
         <div style={{ width: '100vw', height: '100vh', margin: 0, overflow: 'hidden' }}>
@@ -308,13 +280,23 @@ const App = () => {
                                     material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double; polygonOffset: true; polygonOffsetFactor: -1"
                                 />
 
-                                {/* Asteroid model: projected CENTER from solved marker poses. */}
+                                {/* Orange center square at marker size (2x2 inches). */}
+                                {activeAnchorId === id && (
+                                    <a-plane
+                                        position={`${c.x} ${c.y + markerPlaneOffset} ${c.z}`}
+                                        rotation="-90 0 0"
+                                        width="1"
+                                        height="1"
+                                        material="color: #ff8c00; shader: standard; metalness: 0.08; roughness: 0.7; side: double; polygonOffset: true; polygonOffsetFactor: -1"
+                                    />
+                                )}
+
+                                {/* Asteroid model: projected CENTER from config pose */}
                                 {showAsteroid && activeAnchorId === id && (
                                     <a-entity position={`${c.x} ${c.y + modelLift} ${c.z + modelBack}`}>
                                 <a-gltf-model 
                                     src="./models/AsteroidPsyche.glb" 
                                             scale="6.0 6.0 6.0"
-                                            rotation={`0 ${modelYawOffsetDeg} 0`}
                                             position={`0 ${-modelOriginDown} 0`}
                                         />
                                     </a-entity>
@@ -322,38 +304,6 @@ const App = () => {
                             </a-marker>
                                 );
                             })}
-
-                    {SURFACE_MARKER_IDS.map((id) => (
-                        <a-marker
-                            key={id}
-                            type="barcode"
-                            value={id}
-                            size={MARKER_SIZE_METERS}
-                            smooth="true"
-                            smoothCount="18"
-                            smoothTolerance="0.008"
-                            smoothThreshold="4"
-                        >
-                            {/* Red square on each surface marker (0,2,5,7). */}
-                            <a-plane
-                                position={`${markerOverlayShiftX} ${markerPlaneOffset} ${markerOverlayShiftZ}`}
-                                rotation="-90 0 0"
-                                width={markerOverlayWidth}
-                                height={markerOverlayHeight}
-                                material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double; polygonOffset: true; polygonOffsetFactor: -1"
-                            />
-                            {showAsteroid && activeAnchorId === id && (
-                                <a-entity position={`${(centerOffsetsById[id]?.x ?? 0)} ${(centerOffsetsById[id]?.y ?? 0) + modelLift} ${(centerOffsetsById[id]?.z ?? 0) + modelBack}`}>
-                                    <a-gltf-model
-                                        src="./models/AsteroidPsyche.glb"
-                                        scale="6.0 6.0 6.0"
-                                        rotation={`0 ${modelYawOffsetDeg} 0`}
-                                        position={`0 ${-modelOriginDown} 0`}
-                                    />
-                                </a-entity>
-                            )}
-                        </a-marker>
-                    ))}
                         </a-scene>
             )}
         </div>
