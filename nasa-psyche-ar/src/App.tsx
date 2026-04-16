@@ -87,12 +87,17 @@ const App = () => {
     const lastSeenMsRef = useRef<Record<number, number>>({});
 
     // Visual constants in marker-local units (marker width ~= 1 local unit).
-    const modelLift = -2.12; // marker-local +Y (up)
-    const modelBack = -1.2; // marker-local -Z (away from camera)
-    const modelOriginDown = 1.5; // move mesh down without changing scale
+    const modelLift = -10.15; // vertical offset from solved center (marker-local +Y)
+    const modelBack = 0.0; // no extra camera-direction push; use solved center position
+    const modelOriginDown = 0.0; // avoid double-lowering; use modelLift as primary control
+    const modelPitchOffsetDeg = 35; // slight tilt-back
     const modelYawOffsetDeg = 180; // global asteroid yaw correction for all marker anchors
+    const modelRollOffsetDeg = 0; // left-right tilt
+    const modelScaleX = 7.2; // stretch left-right
+    const modelScaleY = 6.0;
+    const modelScaleZ = 6.0;
     const showAsteroid = true;
-    const markerPlaneOffset = 0.0; // keep exactly on marker plane for best alignment
+    const markerPlaneOffset = 0.01; // keep red square slightly above asteroid
     const markerOverlayWidth = 1.30; // widen left/right coverage
     const markerOverlayHeight = 0.88; // reduce opposite axis stretch
     const markerOverlayShiftX = 0.03; // nudge to right
@@ -310,12 +315,12 @@ const App = () => {
 
                                 {/* Asteroid model: projected CENTER from solved marker poses. */}
                                 {showAsteroid && activeAnchorId === id && (
-                                    <a-entity position={`${c.x} ${c.y + modelLift} ${c.z + modelBack}`}>
+                                    <a-entity position={`${c.x} ${c.y} ${c.z}`}>
                                 <a-gltf-model 
                                     src="./models/AsteroidPsyche.glb" 
-                                            scale="6.0 6.0 6.0"
-                                            rotation={`0 ${modelYawOffsetDeg} 0`}
-                                            position={`0 ${-modelOriginDown} 0`}
+                                            scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
+                                            rotation={`${modelPitchOffsetDeg} ${modelYawOffsetDeg} ${modelRollOffsetDeg}`}
+                                            position={`0 ${modelLift - modelOriginDown} ${modelBack}`}
                                         />
                                     </a-entity>
                                 )}
@@ -343,12 +348,12 @@ const App = () => {
                                 material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double; polygonOffset: true; polygonOffsetFactor: -1"
                             />
                             {showAsteroid && activeAnchorId === id && (
-                                <a-entity position={`${(centerOffsetsById[id]?.x ?? 0)} ${(centerOffsetsById[id]?.y ?? 0) + modelLift} ${(centerOffsetsById[id]?.z ?? 0) + modelBack}`}>
+                                <a-entity position={`${(centerOffsetsById[id]?.x ?? 0)} ${(centerOffsetsById[id]?.y ?? 0)} ${(centerOffsetsById[id]?.z ?? 0)}`}>
                                     <a-gltf-model
                                         src="./models/AsteroidPsyche.glb"
-                                        scale="6.0 6.0 6.0"
-                                        rotation={`0 ${modelYawOffsetDeg} 0`}
-                                        position={`0 ${-modelOriginDown} 0`}
+                                        scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
+                                        rotation={`${modelPitchOffsetDeg} ${modelYawOffsetDeg} ${modelRollOffsetDeg}`}
+                                        position={`0 ${modelLift - modelOriginDown} ${modelBack}`}
                                     />
                                 </a-entity>
                             )}
