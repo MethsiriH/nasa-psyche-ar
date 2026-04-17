@@ -82,13 +82,15 @@ const OBSTACLE_DIRECTIONS: [number, number, number, number][] = [
     [-1.21, -1.4, 1.6656, 0.35],
 ];
 
+type SampleModel = 'crystal' | 'ore' | 'rock';
+
 const App = () => {
     const [gameState, setGameState] = useState('MENU');
     const [score, setScore] = useState(0);
     const [difficulty, setDifficulty] = useState<'easy' | 'normal' | 'hard'>('normal');
     const modeCfg = MODE_CONFIG[difficulty as Difficulty];
     // Samples (collectibles) and Obstacles
-    const [samples, setSamples] = useState<{ id: string; x: number; y: number; z: number }[]>([]);
+    const [samples, setSamples] = useState<{ id: string; x: number; y: number; z: number; model: SampleModel; rotation: string }[]>([]);
     const samplesRef = useRef<typeof samples>([]);
     samplesRef.current = samples;
     const [samplesCollected, setSamplesCollected] = useState(0);
@@ -692,6 +694,7 @@ const App = () => {
 
     /** On game start: reset state and spawn samples/obstacles (WEB_GAME only). */
     useEffect(() => {
+        const THREE = (window as any).THREE;
         if (gameState === 'WEB_GAME' || gameState === 'AR_MODE') {
             setRoverReady(false);
             setScore(0);
@@ -709,9 +712,24 @@ const App = () => {
                 setObstacles(obsList);
 
                 // Samples — randomly placed on the asteroid surface, skipping obstacle zones
-                const sampleList: { id: string; x: number; y: number; z: number }[] = [];
+                const sampleList: { id: string; x: number; y: number; z: number; model: SampleModel; rotation: string }[] = [];
                 const MIN_SAMPLE_SPACING = 1.5;
                 const MAX_ATTEMPTS = modeCfg.spawnSamples * 100;
+
+                // Build a shuffled queue of model types (6 crystal / 7 ore / 7 rock for n=20)
+                const n = modeCfg.spawnSamples;
+                const base = Math.floor(n / 3);
+                const extra = n % 3;
+                const modelQueue: SampleModel[] = [
+                    ...Array<SampleModel>(base).fill('crystal'),
+                    ...Array<SampleModel>(base + (extra >= 1 ? 1 : 0)).fill('ore'),
+                    ...Array<SampleModel>(base + (extra >= 2 ? 1 : 0)).fill('rock'),
+                ];
+                for (let i = modelQueue.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [modelQueue[i], modelQueue[j]] = [modelQueue[j], modelQueue[i]];
+                }
+
                 let attempts = 0;
                 while (sampleList.length < modeCfg.spawnSamples && attempts < MAX_ATTEMPTS) {
                     attempts++;
@@ -731,7 +749,17 @@ const App = () => {
                             return dx * dx + dy * dy + dz * dz < MIN_SAMPLE_SPACING * MIN_SAMPLE_SPACING;
                         });
                         if (!insideObstacle && !tooClose) {
-                            sampleList.push({ id: `s-${sampleList.length}`, x: r.position[0], y: r.position[1], z: r.position[2] });
+                            // Align sample local +Y with the surface normal (approximated by position-from-origin),
+                            // then add a random yaw around that normal for visual variety.
+                            const px = r.position[0], py = r.position[1], pz = r.position[2];
+                            const normal = new THREE.Vector3(px, py, pz).normalize();
+                            const alignQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+                            const yawQ = new THREE.Quaternion().setFromAxisAngle(normal, Math.random() * Math.PI * 2);
+                            alignQ.premultiply(yawQ);
+                            const e = new THREE.Euler().setFromQuaternion(alignQ, 'YXZ');
+                            const R2D = 180 / Math.PI;
+                            const rotation = `${e.x * R2D} ${e.y * R2D} ${e.z * R2D}`;
+                            sampleList.push({ id: `s-${sampleList.length}`, x: px, y: py, z: pz, model: modelQueue[sampleList.length], rotation });
                         }
                     } catch (_) { }
                 }
@@ -1121,8 +1149,8 @@ const App = () => {
 
                             {/* Samples (collectibles) */}
                             {samples.map(s => (
-                                <a-entity key={s.id} position={`${s.x} ${s.y} ${s.z}`}>
-                                    <a-sphere radius="0.05" color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                <a-entity key={s.id} position={`${s.x} ${s.y} ${s.z}`} rotation={s.rotation}>
+                                    <a-gltf-model src={`./models/${s.model}.glb`} scale="0.2 0.2 0.2" />
                                 </a-entity>
                             ))}
 
