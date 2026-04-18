@@ -184,7 +184,22 @@
       });
     }
 
-    input.addEventListener('input', () => render(input.value));
+    input.addEventListener('input', () => {
+      const url = input.value;
+      if (url.trim()) {
+        localStorage.setItem('psyche-qr-url', url);
+      } else {
+        localStorage.removeItem('psyche-qr-url');
+      }
+      render(url);
+    });
+
+    // Restore last URL on load
+    const saved = localStorage.getItem('psyche-qr-url');
+    if (saved) {
+      input.value = saved;
+      render(saved);
+    }
 
     btnPrint.addEventListener('click', () => window.print());
 
