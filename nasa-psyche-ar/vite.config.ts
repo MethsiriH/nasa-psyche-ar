@@ -8,5 +8,5 @@ export default defineConfig({
     react(),
     wasmPack('./rust_engine')
   ],
-  base: '/platinum_18a_ar_xr-uark/',
+  base: '/psyche-ar-game/',
 })
