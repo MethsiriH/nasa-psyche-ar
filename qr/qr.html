@@ -189,10 +189,19 @@
     btnPrint.addEventListener('click', () => window.print());
 
     btnSave.addEventListener('click', () => {
-      const canvas = canvasDiv.querySelector('canvas');
-      if (!canvas) return;
+      const src = canvasDiv.querySelector('canvas');
+      if (!src) return;
+      // Composite onto a larger white canvas so the QR has a scannable quiet zone.
+      const margin = Math.round(src.width * 0.12);
+      const out = document.createElement('canvas');
+      out.width  = src.width  + margin * 2;
+      out.height = src.height + margin * 2;
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(src, margin, margin);
       const a = document.createElement('a');
-      a.href = canvas.toDataURL('image/png');
+      a.href = out.toDataURL('image/png');
       a.download = 'psyche-ar-qr.png';
       a.click();
     });
