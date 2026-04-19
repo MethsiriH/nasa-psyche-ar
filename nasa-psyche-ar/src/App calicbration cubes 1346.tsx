@@ -87,10 +87,12 @@ const App = () => {
     const modelOriginDown = 1.5; // move mesh down without changing scale
     const showAsteroid = false; // set true to re-enable asteroid model
     const markerPlaneOffset = 0.0; // keep exactly on marker plane for best alignment
-    const markerOverlayWidth = 1.30; // widen left/right coverage
-    const markerOverlayHeight = 0.88; // reduce opposite axis stretch
-    const markerOverlayShiftX = 0.03; // nudge to right
-    const markerOverlayShiftZ = -0.03; // nudge to top
+    const markerOverlaySize = 1.0; // 2 inches in marker-local units
+    const markerOverlayWidth = markerOverlaySize * 1.8;
+    const markerOverlayHeight = markerOverlaySize;
+    const markerOverlayDepth = markerOverlaySize;
+    const markerOverlayShiftX = 0.0; // center on marker
+    const markerOverlayShiftZ = 0.0; // center on marker
 
     useEffect(() => {
         if (!arActive) return;
@@ -271,13 +273,14 @@ const App = () => {
                                 smoothTolerance="0.008"
                                 smoothThreshold="4"
                             >
-                                {/* Red square at marker size (2x2 inches), aligned to marker face. */}
-                                <a-plane
-                                    position={`${markerOverlayShiftX} ${markerPlaneOffset} ${markerOverlayShiftZ}`}
+                                {/* Red cube overlay, centered on marker. */}
+                                <a-box
+                                    position={`${markerOverlayShiftX} ${markerPlaneOffset + markerOverlayDepth / 2} ${markerOverlayShiftZ}`}
                                     rotation="-90 0 0"
                                     width={markerOverlayWidth}
-                                    height={markerOverlayHeight}
-                                    material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double; polygonOffset: true; polygonOffsetFactor: -1"
+                                    height={markerOverlayDepth}
+                                    depth={markerOverlayHeight}
+                                    material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double"
                                 />
 
                                 {/* Orange center square at marker size (2x2 inches). */}

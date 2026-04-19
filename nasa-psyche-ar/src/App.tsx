@@ -22,7 +22,6 @@ const randomUnitVector = (): [number, number, number] => {
 const MOVE_INTERVAL = 33; // ms between movement ticks (~30 fps)
 const AR_ROVER_SPEED_SCALE = 0.4;
 const AR_ROVER_START_DIRECTION: [number, number, number] = [0, 1, 0];
-const AR_ROVER_SURFACE_OFFSET = 0.06;
 
 const pushOutFromCenter = (x: number, y: number, z: number, offset: number): [number, number, number] => {
     const len = Math.hypot(x, y, z);
@@ -217,14 +216,46 @@ const App = () => {
     const modelScaleX = 7.2;
     const modelScaleY = 6.0;
     const modelScaleZ = 6.0;
-    const showArAsteroid = false;
-    const arRoverDesiredScale = 5.0;
+    const showArAsteroid = true;
+    /** Marker debug cube: one reference edge; other sides are ratios of this (same units as red overlay). */
+    const MARKER_CUBE_REF_SIZE = 1.0;
+    const MARKER_CUBE_WIDTH_RATIO = 1.8;
+    const MARKER_CUBE_HEIGHT_RATIO = 1.0;
+    const MARKER_CUBE_DEPTH_RATIO = 1.0;
+    const markerPlaneOffset = 0.0;
+    const markerOverlaySize = MARKER_CUBE_REF_SIZE;
+    const markerOverlayWidth = markerOverlaySize * MARKER_CUBE_WIDTH_RATIO;
+    const markerOverlayHeight = markerOverlaySize * MARKER_CUBE_HEIGHT_RATIO;
+    const markerOverlayDepth = markerOverlaySize * MARKER_CUBE_DEPTH_RATIO;
+    const markerOverlayShiftX = 0.0;
+    const markerOverlayShiftZ = 0.0;
+    /** AR visuals inside the asteroid-scaled entity: lengths as fractions of the reference cube edge. */
+    const AR_SAMPLE_RADIUS_FR = 0.008;
+    const AR_ARROW_CONE_HEIGHT_FR = 0.015;
+    const AR_ARROW_CONE_RADIUS_FR = 0.008;
+    const AR_ARROW_CYL_RADIUS_FR = 0.002;
+    const AR_ARROW_CYL_HEIGHT_FR = 0.018;
+    const AR_ARROW_CONE_OFFSET_Y_FR = 0.016;
+    const AR_ARROW_CYL_OFFSET_Y_FR = 0.003;
+    const AR_ARROW_ORBIT_RADIUS_FR = 0.2 / MARKER_CUBE_WIDTH_RATIO;
+    const AR_ARROW_NORMAL_OFFSET_FR = 0.04;
+    const AR_COLLECTION_RADIUS_FR = 0.25;
+    const AR_ROVER_SURFACE_OFFSET_FR = 0.06;
+    const AR_ROVER_DESIRED_SCALE_FR = 5.0;
+    const arSampleRadius = markerOverlaySize * AR_SAMPLE_RADIUS_FR;
+    const arObstacleParentScaleMean = (modelScaleX + modelScaleY + modelScaleZ) / 3;
+    const arArrowConeHeight = markerOverlaySize * AR_ARROW_CONE_HEIGHT_FR;
+    const arArrowConeRadiusBottom = markerOverlaySize * AR_ARROW_CONE_RADIUS_FR;
+    const arArrowCylRadius = markerOverlaySize * AR_ARROW_CYL_RADIUS_FR;
+    const arArrowCylHeight = markerOverlaySize * AR_ARROW_CYL_HEIGHT_FR;
+    const arArrowConeY = markerOverlaySize * AR_ARROW_CONE_OFFSET_Y_FR;
+    const arArrowCylY = markerOverlaySize * AR_ARROW_CYL_OFFSET_Y_FR;
+    const arArrowOrbitRadius = markerOverlayWidth * AR_ARROW_ORBIT_RADIUS_FR;
+    const arArrowNormalOffset = markerOverlaySize * AR_ARROW_NORMAL_OFFSET_FR;
+    const arCollectionRadius = markerOverlaySize * AR_COLLECTION_RADIUS_FR;
+    const arSurfaceOffset = markerOverlaySize * AR_ROVER_SURFACE_OFFSET_FR;
+    const arRoverDesiredScale = markerOverlaySize * AR_ROVER_DESIRED_SCALE_FR;
     const arRoverScaleStr = `${arRoverDesiredScale / modelScaleX} ${arRoverDesiredScale / modelScaleY} ${arRoverDesiredScale / modelScaleZ}`;
-    const markerPlaneOffset = 0.01;
-    const markerOverlayWidth = 1.30;
-    const markerOverlayHeight = 0.88;
-    const markerOverlayShiftX = 0.03;
-    const markerOverlayShiftZ = -0.03;
     const markerLostGraceMs = 700;
     const anchorSwitchDebounceMs = 450;
 
@@ -237,7 +268,7 @@ const App = () => {
                 const response = await fetch('./models/AsteroidPsyche_Collision.glb');
                 const arrayBuffer = await response.arrayBuffer();
                 const bytes = new Uint8Array(arrayBuffer);
-
+                
                 console.log(`📦 Loading collision mesh: ${bytes.length} bytes`);
                 await load_collision_mesh(bytes);
                 console.log("✅ Collision mesh loaded!");
@@ -246,7 +277,7 @@ const App = () => {
                 console.error("❌ Failed to initialize:", e);
             }
         };
-
+        
         initRust();
     }, []);
 
@@ -516,7 +547,7 @@ const App = () => {
                 currentPos.x, currentPos.y, currentPos.z
             );
             const [px, py, pz] = gameState === 'AR_MODE'
-                ? pushOutFromCenter(result.position[0], result.position[1], result.position[2], AR_ROVER_SURFACE_OFFSET)
+                ? pushOutFromCenter(result.position[0], result.position[1], result.position[2], arSurfaceOffset)
                 : [result.position[0], result.position[1], result.position[2]];
 
             rover.setAttribute('position', {
@@ -554,11 +585,10 @@ const App = () => {
                     const projected = toSample.clone().addScaledVector(normal, -toSample.dot(normal)).normalize();
 
                     if (projected.lengthSq() > 0.001) {
-                        // Orbit: place arrow at fixed radius around rover in the sample's direction
-                        const ORBIT_RADIUS = 0.20;
+                        // Orbit: radius from marker width ratio (same basis as red calibration cube)
                         const arrowPos = roverVec.clone()
-                            .addScaledVector(projected, ORBIT_RADIUS)
-                            .addScaledVector(normal, 0.04);
+                            .addScaledVector(projected, arArrowOrbitRadius)
+                            .addScaledVector(normal, arArrowNormalOffset);
                         arrowEl.setAttribute('position', `${arrowPos.x} ${arrowPos.y} ${arrowPos.z}`);
 
                         // Align arrow apex (+Y) with the projected direction (pointing away from rover)
@@ -582,8 +612,8 @@ const App = () => {
                 setEnergy(drained);
             }
 
-            /* Check sample collection within radius. */
-            const COLLECTION_RADIUS = 0.25;
+            /* Check sample collection within radius (AR scales with marker cube). */
+            const COLLECTION_RADIUS = gameState === 'AR_MODE' ? arCollectionRadius : 0.25;
             /* Check waypoint collection within radius (waypoints + samples). */
             const rx = px, ry = py, rz = pz;
             // samples
@@ -606,7 +636,7 @@ const App = () => {
         } catch (e) {
             console.error("Movement error:", e);
         }
-    }, [gameState]);
+    }, [gameState, difficulty, arSurfaceOffset, arArrowOrbitRadius, arArrowNormalOffset, arCollectionRadius]);
 
     /**
      * Global keyboard handlers
@@ -819,7 +849,7 @@ const App = () => {
                             radius,
                         });
                     } catch (_) {}
-                }          
+                }
                 setObstacles(obsList);
 
                 energyRef.current = 100;
@@ -877,11 +907,11 @@ const App = () => {
                         AR_ROVER_START_DIRECTION[2]
                     );
                 } else {
-                    const pos = rover.getAttribute('position');
+                const pos = rover.getAttribute('position');
                     result = move_rover_on_asteroid(0, 0, 0, pos.x, pos.y, pos.z);
                 }
                 const [px, py, pz] = gameState === 'AR_MODE'
-                    ? pushOutFromCenter(result.position[0], result.position[1], result.position[2], AR_ROVER_SURFACE_OFFSET)
+                    ? pushOutFromCenter(result.position[0], result.position[1], result.position[2], arSurfaceOffset)
                     : [result.position[0], result.position[1], result.position[2]];
 
                 rover.setAttribute('position', {
@@ -909,23 +939,23 @@ const App = () => {
 
         const validKeys = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 
-        const onKeyDown = (e: KeyboardEvent) => {
+            const onKeyDown = (e: KeyboardEvent) => {
             if (showIntroPopupRef.current) return;
-            const key = e.key.toLowerCase();
-            if (!validKeys.has(key)) return;
-            e.preventDefault();
-            keysHeld.current.add(key);
-            if (moveLoopId.current === null) {
-                moveLoopId.current = requestAnimationFrame(movementLoop);
-            }
-        };
+                const key = e.key.toLowerCase();
+                if (!validKeys.has(key)) return;
+                e.preventDefault();
+                keysHeld.current.add(key);
+                if (moveLoopId.current === null) {
+                    moveLoopId.current = requestAnimationFrame(movementLoop);
+                }
+            };
 
-        const onKeyUp = (e: KeyboardEvent) => {
-            keysHeld.current.delete(e.key.toLowerCase());
-        };
+            const onKeyUp = (e: KeyboardEvent) => {
+                keysHeld.current.delete(e.key.toLowerCase());
+            };
 
-        window.addEventListener('keydown', onKeyDown);
-        window.addEventListener('keyup', onKeyUp);
+            window.addEventListener('keydown', onKeyDown);
+            window.addEventListener('keyup', onKeyUp);
 
         return () => {
             cancelled = true;
@@ -939,7 +969,7 @@ const App = () => {
             }
             keysHeld.current.clear();
         };
-    }, [gameState, meshLoaded, movementLoop]);
+    }, [gameState, meshLoaded, movementLoop, arSurfaceOffset]);
 
     /** AR calibration source: center offsets from solved marker reports/config. */
     useEffect(() => {
@@ -1224,17 +1254,17 @@ const App = () => {
                     {/* AR Scene with Camera Access */}
                     <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0 }}>
                         <a-scene
-                            embedded
+                            embedded 
                             style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
                             arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63; patternRatio: 0.52;"
                             vr-mode-ui="enabled: false"
                             renderer="logarithmicDepthBuffer: true;"
                         >
                             <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-
+                            
                             {TABLE_MARKER_IDS.map((id) => {
                                 const c = centerOffsetsById[id] ?? { x: 0, y: 0, z: 0 };
-                                return (
+                                            return (
                                     <a-marker
                                         key={id}
                                         type="barcode"
@@ -1245,18 +1275,18 @@ const App = () => {
                                         smoothTolerance="0.008"
                                         smoothThreshold="4"
                                     >
-                                        <a-plane
-                                            visible="false"
-                                            position={`${markerOverlayShiftX} ${markerPlaneOffset} ${markerOverlayShiftZ}`}
+                                        <a-box
+                                            position={`${markerOverlayShiftX} ${markerPlaneOffset + markerOverlayDepth / 2} ${markerOverlayShiftZ}`}
                                             rotation="-90 0 0"
                                             width={markerOverlayWidth}
-                                            height={markerOverlayHeight}
-                                            material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double; polygonOffset: true; polygonOffsetFactor: -1"
+                                            height={markerOverlayDepth}
+                                            depth={markerOverlayHeight}
+                                            material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double"
                                         />
 
                                         {activeAnchorId === id && (
                                             <a-entity position={`${c.x} ${c.y} ${c.z}`}>
-                                                <a-entity
+                                <a-entity
                                                     position={`0 ${modelLift} ${modelBack}`}
                                                     rotation={`${modelPitchOffsetDeg} ${modelYawOffsetDeg} ${modelRollOffsetDeg}`}
                                                     scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
@@ -1264,36 +1294,36 @@ const App = () => {
                                                     {showArAsteroid && <a-gltf-model src="./models/AsteroidPsyche.glb" />}
 
                                                     {samples.map((s) => (
-                                                        <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
-                                                            <a-sphere radius="0.008" color="#7bffb2" material="transparent: true; opacity: 0.95" />
-                                                        </a-entity>
-                                                    ))}
+                                        <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
+                                                            <a-sphere radius={arSampleRadius} color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                        </a-entity>
+                                    ))}
 
                                                     {obstacles.map((o) => (
-                                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
-                                                            <a-sphere radius={o.radius / 6.0} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
-                                                        </a-entity>
-                                                    ))}
+                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
+                                                            <a-sphere radius={o.radius / arObstacleParentScaleMean} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
+                                        </a-entity>
+                                    ))}
 
                                                     <a-entity id="sample-arrow" visible="false">
                                                         <a-entity animation="property: scale; from: 1 1 1; to: 1.35 1.35 1.35; loop: true; dir: alternate; dur: 500; easing: easeInOutSine">
                                                             <a-cone
-                                                                height="0.015"
-                                                                radius-bottom="0.008"
+                                                                height={arArrowConeHeight}
+                                                                radius-bottom={arArrowConeRadiusBottom}
                                                                 radius-top="0"
                                                                 color="#FFD700"
-                                                                position="0 0.016 0"
+                                                                position={`0 ${arArrowConeY} 0`}
                                                                 material="emissive: #FFD700; emissiveIntensity: 0.55; transparent: true; opacity: 0.95"
                                                             />
                                                             <a-cylinder
-                                                                radius="0.002"
-                                                                height="0.018"
+                                                                radius={arArrowCylRadius}
+                                                                height={arArrowCylHeight}
                                                                 color="#FFD700"
-                                                                position="0 0.003 0"
+                                                                position={`0 ${arArrowCylY} 0`}
                                                                 material="emissive: #FFD700; emissiveIntensity: 0.35; transparent: true; opacity: 0.8"
                                                             />
-                                                        </a-entity>
-                                                    </a-entity>
+                                    </a-entity>
+                                </a-entity>
 
                                                     <a-entity
                                                         id="ar-rover"
@@ -1348,13 +1378,13 @@ const App = () => {
                                         smoothTolerance="0.008"
                                         smoothThreshold="4"
                                     >
-                                        <a-plane
-                                            visible="false"
-                                            position={`${markerOverlayShiftX} ${markerPlaneOffset} ${markerOverlayShiftZ}`}
+                                        <a-box
+                                            position={`${markerOverlayShiftX} ${markerPlaneOffset + markerOverlayDepth / 2} ${markerOverlayShiftZ}`}
                                             rotation="-90 0 0"
                                             width={markerOverlayWidth}
-                                            height={markerOverlayHeight}
-                                            material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double; polygonOffset: true; polygonOffsetFactor: -1"
+                                            height={markerOverlayDepth}
+                                            depth={markerOverlayHeight}
+                                            material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double"
                                         />
 
                                         {activeAnchorId === id && (
@@ -1368,31 +1398,31 @@ const App = () => {
 
                                                     {samples.map((s) => (
                                                         <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
-                                                            <a-sphere radius="0.008" color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                                            <a-sphere radius={arSampleRadius} color="#7bffb2" material="transparent: true; opacity: 0.95" />
                                                         </a-entity>
                                                     ))}
 
                                                     {obstacles.map((o) => (
                                                         <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
-                                                            <a-sphere radius={o.radius / 6.0} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
+                                                            <a-sphere radius={o.radius / arObstacleParentScaleMean} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
                                                         </a-entity>
                                                     ))}
 
                                                     <a-entity id="sample-arrow" visible="false">
                                                         <a-entity animation="property: scale; from: 1 1 1; to: 1.35 1.35 1.35; loop: true; dir: alternate; dur: 500; easing: easeInOutSine">
                                                             <a-cone
-                                                                height="0.015"
-                                                                radius-bottom="0.008"
+                                                                height={arArrowConeHeight}
+                                                                radius-bottom={arArrowConeRadiusBottom}
                                                                 radius-top="0"
                                                                 color="#FFD700"
-                                                                position="0 0.016 0"
+                                                                position={`0 ${arArrowConeY} 0`}
                                                                 material="emissive: #FFD700; emissiveIntensity: 0.55; transparent: true; opacity: 0.95"
                                                             />
                                                             <a-cylinder
-                                                                radius="0.002"
-                                                                height="0.018"
+                                                                radius={arArrowCylRadius}
+                                                                height={arArrowCylHeight}
                                                                 color="#FFD700"
-                                                                position="0 0.003 0"
+                                                                position={`0 ${arArrowCylY} 0`}
                                                                 material="emissive: #FFD700; emissiveIntensity: 0.35; transparent: true; opacity: 0.8"
                                                             />
                                                         </a-entity>
@@ -1438,7 +1468,7 @@ const App = () => {
                                 );
                             })}
                         </a-scene>
-                    </div>
+                                </div>
 
                     <div id="ui-overlay" style={{ display: 'block' }}>
                         {scanPrompt && (
@@ -1448,13 +1478,13 @@ const App = () => {
                         )}
 
                         <div id="score-display">
-                            SCORE <span id="score">{score}</span>
-                        </div>
+                                    SCORE <span id="score">{score}</span>
+                                </div>
 
                         <div className="mode-ui">
                             {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${energy}%` }} /></div></div>}
-                            <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
-                        </div>
+                                    <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
+                                </div>
 
                         <div id="controls">
                             <div
@@ -1485,13 +1515,13 @@ const App = () => {
                             background="color: #000011"
                         >
                             {/* Follow Camera */}
-                            <a-camera
+                            <a-camera 
                                 id="follow-camera"
                                 position="0 0 5"
-                                look-controls="enabled: false"
+                                look-controls="enabled: false" 
                                 wasd-controls="enabled: false"
                             ></a-camera>
-
+                            
                             {/* Helper markers */}
                             <a-sphere position="0 0 0" radius="0.2" color="yellow"></a-sphere>
                             <a-text value="ORIGIN" position="0 0.5 0" scale="1 1 1" color="yellow" align="center"></a-text>
@@ -1520,29 +1550,29 @@ const App = () => {
                             </a-entity>
 
                             {/* VISUAL ASTEROID - hidden */}
-                            <a-entity
-                                id="asteroid"
+                            <a-entity 
+                                id="asteroid" 
                                 position="0 0 0"
                                 rotation="0 0 0"
                                 visible="false"
                             >
-                                <a-gltf-model
+                                <a-gltf-model 
                                     id="asteroid-model"
-                                    src="./models/AsteroidPsyche.glb"
+                                    src="./models/AsteroidPsyche.glb" 
                                     scale="2.5 2.5 2.5"
                                     position="-3.75 -2.2 3.22"
                                 ></a-gltf-model>
                             </a-entity>
 
                             {/* COLLISION MESH - hidden (only used by Rust raycasting) */}
-                            <a-entity
+                            <a-entity 
                                 id="collision-viz"
                                 position="0 0 0"
                                 rotation="0 0 0"
                                 visible="false"
                             >
-                                <a-gltf-model
-                                    src="./models/AsteroidPsyche_Collision.glb"
+                                <a-gltf-model 
+                                    src="./models/AsteroidPsyche_Collision.glb" 
                                     scale="2.5 2.5 2.5"
                                     position="-3.75 -2.2 3.22"
                                 ></a-gltf-model>

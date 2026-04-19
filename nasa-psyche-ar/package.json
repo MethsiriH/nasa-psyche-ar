@@ -20,6 +20,8 @@
     "probe:surface-pairs": "python scripts/surface_pair_probe.py"
   },
   "dependencies": {
+    "@ar-js-org/ar.js": "^3.4.8",
+    "aframe": "^1.6.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
