@@ -20,7 +20,18 @@ const randomUnitVector = (): [number, number, number] => {
 };
 
 const MOVE_INTERVAL = 33; // ms between movement ticks (~30 fps)
-const MAX_ENERGY = 50;
+const AR_ROVER_SPEED_SCALE = 0.4;
+const AR_ROVER_START_DIRECTION: [number, number, number] = [0, 1, 0];
+
+const pushOutFromCenter = (x: number, y: number, z: number, offset: number): [number, number, number] => {
+    const len = Math.hypot(x, y, z);
+    if (len < 1e-6) return [x, y, z];
+    return [
+        x + (x / len) * offset,
+        y + (y / len) * offset,
+        z + (z / len) * offset,
+    ];
+};
 
 /** Generates star data with uniform random distribution across a surrounding sphere. */
 const generateStars = (count: number) => {
@@ -50,11 +61,6 @@ const generateStars = (count: number) => {
 
 const STARS = generateStars(250);
 
-/** World-space directions for raycasting waypoint positions on the asteroid surface. */
-// const WAYPOINT_DIRECTIONS: [number, number, number][] = [
-//     [0.707, 0, 0.707], [-0.707, 0.2, 0.707], [0, 0.707, 0.707], [0, -0.707, 0.707],
-//     [0.707, 0.707, 0], [-0.707, 0.5, -0.5], [0, 0, -1], [0.5, -0.707, -0.5],
-// ];
 
 const INTRO_CONTENT: Record<string, { welcome: string; description: string }> = {
     easy: {
@@ -62,12 +68,12 @@ const INTRO_CONTENT: Record<string, { welcome: string; description: string }> = 
         description: 'Explore the surface of asteroid Psyche with complete freedom. Pilot the rover across the terrain and drive over samples to collect them. If you ever get lost, follow the indicator arrow to the nearest sample.',
     },
     normal: {
-        welcome: 'Welcome to Standard Mode',
+        welcome: 'Welcome to Normal Mode',
         description: "Explore Psyche with the energy system in play. Your rover's battery drains as you roam — collect samples efficiently before power runs out. Follow the indicator arrow if you lose track of your next sample. The mission ends when you collect all 20 samples or run out of energy.",
     },
     hard: {
-        welcome: 'Welcome to Challenge Mode',
-        description: "Psyche is at its most unforgiving. Energy drains your battery, and craters larger than the rover are scattered across the surface — driving into one cuts your speed in half and drains energy faster. Navigate carefully, collect samples quickly, and use the indicator arrow wisely. The mission ends when you collect all 20 samples or run out of energy.",
+        welcome: 'Welcome to Hard Mode',
+        description: "Psyche is at its most unforgiving. Energy drains your battery, and craters larger than the rover are scattered across the surface — driving into one cuts your speed in half. Navigate carefully, collect samples quickly, and use the indicator arrow wisely. The mission ends when you collect all 20 samples or run out of energy.",
     },
 };
 const OBSTACLE_DIRECTIONS: [number, number, number, number][] = [
@@ -82,7 +88,73 @@ const OBSTACLE_DIRECTIONS: [number, number, number, number][] = [
     [-1.21, -1.4, 1.6656, 0.35],
 ];
 
-type SampleModel = 'crystal' | 'ore' | 'rock';
+type MarkerOffset = { x: number; y: number; z: number };
+type MarkerPoseSource = { byId: Record<number, number[]>; center?: MarkerOffset };
+const TABLE_MARKER_IDS = [1, 3, 4, 6] as const;
+const SURFACE_MARKER_IDS = [0, 2, 5, 7] as const;
+const ALL_MARKER_IDS = [...TABLE_MARKER_IDS, ...SURFACE_MARKER_IDS] as const;
+const MARKER_SIZE_METERS = 0.0508; // 2 inches
+
+function translationFromPose(elements: number[]): MarkerOffset {
+    return { x: elements[12], y: elements[13], z: elements[14] };
+}
+
+function centerOffsetInMarkerLocalFromPose(elements: number[], centerGlobal: MarkerOffset): MarkerOffset {
+    // poseMatrix is column-major and represents marker-local -> global transform.
+    // marker-local center = R^T * (centerGlobal - markerTranslation).
+    const tx = elements[12];
+    const ty = elements[13];
+    const tz = elements[14];
+    const dx = centerGlobal.x - tx;
+    const dy = centerGlobal.y - ty;
+    const dz = centerGlobal.z - tz;
+    return {
+        x: elements[0] * dx + elements[1] * dy + elements[2] * dz,
+        y: elements[4] * dx + elements[5] * dy + elements[6] * dz,
+        z: elements[8] * dx + elements[9] * dy + elements[10] * dz,
+    };
+}
+
+function parsePosesFromConfig(json: any): Record<number, number[]> {
+    const controls = Array.isArray(json?.subMarkersControls) ? json.subMarkersControls : [];
+    const byId: Record<number, number[]> = {};
+    for (const row of controls) {
+        const id = row?.parameters?.barcodeValue;
+        const pose = row?.poseMatrix;
+        if (typeof id !== 'number' || !Array.isArray(pose) || pose.length < 16) continue;
+        byId[id] = pose;
+    }
+    return byId;
+}
+
+function parsePosesFromReport(json: any): MarkerPoseSource | null {
+    const markers = json?.markers;
+    if (!markers || typeof markers !== 'object') return null;
+    const byId: Record<number, number[]> = {};
+    for (const id of ALL_MARKER_IDS) {
+        const row = markers[String(id)];
+        const pose = row?.poseMatrix;
+        if (!Array.isArray(pose) || pose.length < 16) continue;
+        byId[id] = pose;
+    }
+    for (const id of TABLE_MARKER_IDS) {
+        if (!byId[id]) return null;
+    }
+    const c = json?.center_1346_m;
+    const center =
+        c && typeof c.x === 'number' && typeof c.y === 'number' && typeof c.z === 'number'
+            ? { x: c.x, y: c.y, z: c.z }
+            : undefined;
+    return { byId, center };
+}
+
+function setsEqual(a: Set<number>, b: Set<number>): boolean {
+    if (a.size !== b.size) return false;
+    for (const v of a) {
+        if (!b.has(v)) return false;
+    }
+    return true;
+}
 
 const App = () => {
     const [gameState, setGameState] = useState('MENU');
@@ -90,7 +162,7 @@ const App = () => {
     const [difficulty, setDifficulty] = useState<'easy' | 'normal' | 'hard'>('normal');
     const modeCfg = MODE_CONFIG[difficulty as Difficulty];
     // Samples (collectibles) and Obstacles
-    const [samples, setSamples] = useState<{ id: string; x: number; y: number; z: number; model: SampleModel; rotation: string }[]>([]);
+    const [samples, setSamples] = useState<{ id: string; x: number; y: number; z: number }[]>([]);
     const samplesRef = useRef<typeof samples>([]);
     samplesRef.current = samples;
     const [samplesCollected, setSamplesCollected] = useState(0);
@@ -100,8 +172,10 @@ const App = () => {
     obstaclesRef.current = obstacles;
 
     // Energy meter (0..100) - skeleton only
-    const [energy, setEnergy] = useState(MAX_ENERGY);
+    const [energy, setEnergy] = useState(100);
     const [showDifficulty, setShowDifficulty] = useState(false);
+    /** When set, choosing Easy/Normal/Hard starts AR instead of the on-screen web scene. */
+    const [launchMissionInAr, setLaunchMissionInAr] = useState(false);
     const [showCredits, setShowCredits] = useState(false);
     const [showIntroPopup, setShowIntroPopup] = useState(false);
     const [introPopupCanClose, setIntroPopupCanClose] = useState(false);
@@ -110,15 +184,7 @@ const App = () => {
     const introLockoutTimerRef = useRef<number | null>(null);
     const [showEndScreen, setShowEndScreen] = useState(false);
     const [endReason, setEndReason] = useState<'complete' | 'energy'>('complete');
-    const [energyBonus, setEnergyBonus] = useState(0);
 
-    // Centralized difficulty configuration placeholder.
-
-    // const difficultyConfig: Record<string, any> = {
-    //     easy: { spawnCount: 4, scoreMultiplier: 0.8 },
-    //     normal: { spawnCount: 6, scoreMultiplier: 1.0 },
-    //     hard: { spawnCount: 8, scoreMultiplier: 1.25 },
-    // };
     const [scanPrompt, setScanPrompt] = useState(true);
     const [meshLoaded, setMeshLoaded] = useState(false);
     const [roverReady, setRoverReady] = useState(false);
@@ -128,10 +194,8 @@ const App = () => {
     const moveLoopId = useRef<number | null>(null);
     const lastMoveTime = useRef(0);
     const prevCamUp = useRef<any>(null);
-    const energyRef = useRef(MAX_ENERGY);
+    const energyRef = useRef(100);
     energyRef.current = energy;
-    const wasInObstacleRef = useRef(false);
-    const endTriggeredRef = useRef(false);
     const modeCfgRef = useRef(modeCfg);
     modeCfgRef.current = modeCfg;
     // Keyboard navigation
@@ -140,6 +204,69 @@ const App = () => {
     const creditsBtnRef = useRef<HTMLButtonElement | null>(null);
     const diffBtnRefs = [useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null)];
     const [waypointPopup, setWaypointPopup] = useState<{ title: string; body?: string; image?: string; } | null>(null);
+    const [centerOffsetsById, setCenterOffsetsById] = useState<Record<number, MarkerOffset>>({});
+    const [arVisibleIds, setArVisibleIds] = useState<Set<number>>(new Set());
+    const [arAnchorId, setArAnchorId] = useState<number | null>(null);
+    const arAnchorHoldTimeoutRef = useRef<number | null>(null);
+    const arLastSeenMsRef = useRef<Record<number, number>>({});
+
+    const modelLift = -30.15;
+    const modelBack = 0.0;
+    const modelYawOffsetDeg = 180;
+    const modelPitchOffsetDeg = 35;
+    const modelRollOffsetDeg = 0;
+    const modelScaleX = 7.2;
+    const modelScaleY = 6.0;
+    const modelScaleZ = 6.0;
+    const showArAsteroid = true;
+    /** Marker debug cube: one reference edge; other sides are ratios of this (same units as red overlay). */
+    const MARKER_CUBE_REF_SIZE = 1.0;
+    const MARKER_CUBE_WIDTH_RATIO = 1.8;
+    const MARKER_CUBE_HEIGHT_RATIO = 1.0;
+    const MARKER_CUBE_DEPTH_RATIO = 1.0;
+    const markerPlaneOffset = 0.0;
+    const markerOverlaySize = MARKER_CUBE_REF_SIZE;
+    const markerOverlayWidth = markerOverlaySize * MARKER_CUBE_WIDTH_RATIO;
+    const markerOverlayHeight = markerOverlaySize * MARKER_CUBE_HEIGHT_RATIO;
+    const markerOverlayDepth = markerOverlaySize * MARKER_CUBE_DEPTH_RATIO;
+    const markerOverlayShiftX = 0.0;
+    const markerOverlayShiftZ = 0.0;
+    /** AR visuals inside the asteroid-scaled entity: lengths as fractions of the reference cube edge. */
+    const AR_SAMPLE_RADIUS_FR = 0.008;
+    const AR_ARROW_CONE_HEIGHT_FR = 0.015;
+    const AR_ARROW_CONE_RADIUS_FR = 0.008;
+    const AR_ARROW_CYL_RADIUS_FR = 0.002;
+    const AR_ARROW_CYL_HEIGHT_FR = 0.018;
+    const AR_ARROW_CONE_OFFSET_Y_FR = 0.016;
+    const AR_ARROW_CYL_OFFSET_Y_FR = 0.003;
+    const AR_ARROW_ORBIT_RADIUS_FR = 0.2 / MARKER_CUBE_WIDTH_RATIO;
+    const AR_ARROW_NORMAL_OFFSET_FR = 0.04;
+    const AR_COLLECTION_RADIUS_FR = 0.25;
+    const AR_ROVER_SURFACE_OFFSET_FR = 0.06;
+    const AR_ROVER_DESIRED_SCALE_FR = 5.0;
+    const arSampleRadius = markerOverlaySize * AR_SAMPLE_RADIUS_FR;
+    const arObstacleParentScaleMean = (modelScaleX + modelScaleY + modelScaleZ) / 3;
+    const arArrowConeHeight = markerOverlaySize * AR_ARROW_CONE_HEIGHT_FR;
+    const arArrowConeRadiusBottom = markerOverlaySize * AR_ARROW_CONE_RADIUS_FR;
+    const arArrowCylRadius = markerOverlaySize * AR_ARROW_CYL_RADIUS_FR;
+    const arArrowCylHeight = markerOverlaySize * AR_ARROW_CYL_HEIGHT_FR;
+    const arArrowConeY = markerOverlaySize * AR_ARROW_CONE_OFFSET_Y_FR;
+    const arArrowCylY = markerOverlaySize * AR_ARROW_CYL_OFFSET_Y_FR;
+    const arArrowOrbitRadius = markerOverlayWidth * AR_ARROW_ORBIT_RADIUS_FR;
+    const arArrowNormalOffset = markerOverlaySize * AR_ARROW_NORMAL_OFFSET_FR;
+    const arCollectionRadius = markerOverlaySize * AR_COLLECTION_RADIUS_FR;
+    const arSurfaceOffset = markerOverlaySize * AR_ROVER_SURFACE_OFFSET_FR;
+    const arRoverDesiredScale = markerOverlaySize * AR_ROVER_DESIRED_SCALE_FR;
+    const arRoverScaleStr = `${arRoverDesiredScale / modelScaleX} ${arRoverDesiredScale / modelScaleY} ${arRoverDesiredScale / modelScaleZ}`;
+    /**
+     * Visual asteroid GLB must use the same local transform Rust applies when building the collision
+     * mesh (`rust_engine/src/lib.rs`: scale_factor 2.5, offset -3.75 / -2.2 / 3.22). WASM positions
+     * for rover, samples, and obstacles are already in that baked space.
+     */
+    const arAsteroidGltfScale = '2.5 2.5 2.5';
+    const arAsteroidGltfPosition = '-3.75 -2.2 3.22';
+    const markerLostGraceMs = 700;
+    const anchorSwitchDebounceMs = 450;
 
     /** Initialize WASM and load asteroid collision mesh from GLB. */
     useEffect(() => {
@@ -150,7 +277,7 @@ const App = () => {
                 const response = await fetch('./models/AsteroidPsyche_Collision.glb');
                 const arrayBuffer = await response.arrayBuffer();
                 const bytes = new Uint8Array(arrayBuffer);
-
+                
                 console.log(`📦 Loading collision mesh: ${bytes.length} bytes`);
                 await load_collision_mesh(bytes);
                 console.log("✅ Collision mesh loaded!");
@@ -159,7 +286,7 @@ const App = () => {
                 console.error("❌ Failed to initialize:", e);
             }
         };
-
+        
         initRust();
     }, []);
 
@@ -173,13 +300,12 @@ const App = () => {
         setShowEndScreen(false);
         setShowIntroPopup(false);
         setIntroPopupCanClose(false);
+        setWaypointPopup(null);
         setSamplesCollected(0);
         setScore(0);
-        energyRef.current = MAX_ENERGY;
-        setEnergy(MAX_ENERGY);
-        wasInObstacleRef.current = false;
-        endTriggeredRef.current = false;
-        setEnergyBonus(0);
+        energyRef.current = 100;
+        setEnergy(100);
+        popupIndexRef.current = 0;
     };
 
     const handleStart = async (mode: string, chosenDifficulty?: 'easy' | 'normal' | 'hard') => {
@@ -193,8 +319,18 @@ const App = () => {
             setIntroPopupCanClose(false);
             introLockoutTimerRef.current = window.setTimeout(() => setIntroPopupCanClose(true), 3500);
         } else if (mode === 'ar') {
-            console.log("Starting AR MODE");
+            console.log("Starting AR MODE", chosenDifficulty);
             setGameState('AR_MODE');
+            // Mission from Launch Mission uses briefing intro; quick "AR Experience" skips it.
+            if (chosenDifficulty !== undefined) {
+                if (introLockoutTimerRef.current) clearTimeout(introLockoutTimerRef.current);
+                setShowIntroPopup(true);
+                setIntroPopupCanClose(false);
+                introLockoutTimerRef.current = window.setTimeout(() => setIntroPopupCanClose(true), 3500);
+            } else {
+                setShowIntroPopup(false);
+                setIntroPopupCanClose(false);
+            }
             try {
                 await start_ar_session(mode);
             } catch (e) {
@@ -385,15 +521,18 @@ const App = () => {
         }
     ];
 
-    let popupIndex = 0;
+    const popupIndexRef = useRef(0);
 
     /** Advances rover one step: projects input onto tangent plane, raycasts to surface, updates position and camera. */
     const moveRover = useCallback((inputX: number, inputY: number) => {
         if (gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') return;
+        if (showEndScreen) return;
+        if (showIntroPopup) return;
         if (modeCfgRef.current.energyEnabled && energyRef.current <= 0) return;
 
         const THREE = (window as any).THREE;
-        const rover = document.getElementById('rover') as any;
+        const roverId = gameState === 'AR_MODE' ? 'ar-rover' : 'rover';
+        const rover = document.getElementById(roverId) as any;
         if (!THREE || !rover) return;
 
         const currentPos = rover.getAttribute('position');
@@ -401,8 +540,12 @@ const App = () => {
 
         /* Convert screen-space input to world-space direction via camera frame. */
         const { right, up } = getCameraFrame(currentPos.x, currentPos.y, currentPos.z);
-        let moveDir = up.clone().multiplyScalar(inputY * 0.5).addScaledVector(right, inputX * 0.5);
+        let moveDir = up.clone().multiplyScalar(inputY).addScaledVector(right, inputX);
         let obstacleDrainMultiplier = 1.0;
+
+        if (gameState === 'AR_MODE') {
+            moveDir = moveDir.clone().multiplyScalar(AR_ROVER_SPEED_SCALE);
+        }
 
         if(difficulty == 'normal' || difficulty == 'hard') {
             const cx = currentPos.x, cy = currentPos.y, cz = currentPos.z;
@@ -415,12 +558,7 @@ const App = () => {
             });
 
             const speedMultiplier = isCollidingWithObstacle ? 0.5 : 1.0;
-            obstacleDrainMultiplier = isCollidingWithObstacle ? 6 : 1.0;
-
-            if (isCollidingWithObstacle && !wasInObstacleRef.current) {
-                setScore(s => Math.max(0, s - modeCfgRef.current.obstaclePenalty));
-            }
-            wasInObstacleRef.current = isCollidingWithObstacle;
+            obstacleDrainMultiplier = isCollidingWithObstacle && difficulty == 'hard' ? 20 : 1.0;
 
             moveDir = moveDir.clone().multiplyScalar(speedMultiplier);
         }
@@ -431,15 +569,20 @@ const App = () => {
                 moveDir.x, moveDir.y, moveDir.z,
                 currentPos.x, currentPos.y, currentPos.z
             );
+            const [px, py, pz] = gameState === 'AR_MODE'
+                ? pushOutFromCenter(result.position[0], result.position[1], result.position[2], arSurfaceOffset)
+                : [result.position[0], result.position[1], result.position[2]];
 
             rover.setAttribute('position', {
-                x: result.position[0],
-                y: result.position[1],
-                z: result.position[2]
+                x: px,
+                y: py,
+                z: pz
             });
             
-            updateRoverRotation(rover, result.position[0], result.position[1], result.position[2], moveDir.x, moveDir.y, moveDir.z);
-            updateCamera(result.position[0], result.position[1], result.position[2]);
+            updateRoverRotation(rover, px, py, pz, moveDir.x, moveDir.y, moveDir.z);
+            if (gameState !== 'AR_MODE') {
+                updateCamera(px, py, pz);
+            }
 
             /* Update sample indicator arrow. */
             const arrowEl = document.getElementById('sample-arrow') as any;
@@ -448,7 +591,7 @@ const App = () => {
                 if (currentSamples.length === 0) {
                     arrowEl.setAttribute('visible', 'false');
                 } else {
-                    const rx2 = result.position[0], ry2 = result.position[1], rz2 = result.position[2];
+                    const rx2 = px, ry2 = py, rz2 = pz;
                     let nearest = currentSamples[0];
                     let nearestDist2 = Infinity;
                     for (const s of currentSamples) {
@@ -465,11 +608,10 @@ const App = () => {
                     const projected = toSample.clone().addScaledVector(normal, -toSample.dot(normal)).normalize();
 
                     if (projected.lengthSq() > 0.001) {
-                        // Orbit: place arrow at fixed radius around rover in the sample's direction
-                        const ORBIT_RADIUS = 0.20;
+                        // Orbit: radius from marker width ratio (same basis as red calibration cube)
                         const arrowPos = roverVec.clone()
-                            .addScaledVector(projected, ORBIT_RADIUS)
-                            .addScaledVector(normal, 0.04);
+                            .addScaledVector(projected, arArrowOrbitRadius)
+                            .addScaledVector(normal, arArrowNormalOffset);
                         arrowEl.setAttribute('position', `${arrowPos.x} ${arrowPos.y} ${arrowPos.z}`);
 
                         // Align arrow apex (+Y) with the projected direction (pointing away from rover)
@@ -493,10 +635,10 @@ const App = () => {
                 setEnergy(drained);
             }
 
-            /* Check sample collection within radius. */
-            const COLLECTION_RADIUS = 0.25;
+            /* Check sample collection within radius (AR scales with marker cube). */
+            const COLLECTION_RADIUS = gameState === 'AR_MODE' ? arCollectionRadius : 0.25;
             /* Check waypoint collection within radius (waypoints + samples). */
-            const rx = result.position[0], ry = result.position[1], rz = result.position[2];
+            const rx = px, ry = py, rz = pz;
             // samples
             const sps = samplesRef.current;
             const collectedSamples = sps.filter(s => {
@@ -506,18 +648,18 @@ const App = () => {
             if (collectedSamples.length > 0) {
                 setSamples(prev => prev.filter(s => !collectedSamples.find(c => c.id === s.id)));
                 setSamplesCollected(c => c + collectedSamples.length);
-                setScore(s => s + collectedSamples.length * modeCfgRef.current.samplePoints);
-                const popup = popups[popupIndex];
-                setWaypointPopup(popup);
-                popupIndex = popupIndex + 1;
-
+                setScore(s => s + collectedSamples.length * 150);
+                const idx = Math.min(popupIndexRef.current, popups.length - 1);
+                const popup = popups[idx];
+                if (popup) setWaypointPopup(popup);
+                popupIndexRef.current += collectedSamples.length;
             }
 
             
         } catch (e) {
             console.error("Movement error:", e);
         }
-    }, [gameState]);
+    }, [gameState, difficulty, showEndScreen, showIntroPopup, arSurfaceOffset, arArrowOrbitRadius, arArrowNormalOffset, arCollectionRadius]);
 
     /**
      * Global keyboard handlers
@@ -692,85 +834,52 @@ const App = () => {
         dpadInputRef.current = [0, 0];
     }, []);
 
-    /** On game start: reset state and spawn samples/obstacles (WEB_GAME only). */
+    /** On game start: reset state and spawn samples/obstacles (web or AR mission). */
     useEffect(() => {
-        const THREE = (window as any).THREE;
         if (gameState === 'WEB_GAME' || gameState === 'AR_MODE') {
             setRoverReady(false);
             setScore(0);
+            popupIndexRef.current = 0;
+            setShowEndScreen(false);
+            setWaypointPopup(null);
             prevCamUp.current = null;
-            if (meshLoaded && gameState === 'WEB_GAME') {
-                // Obstacles — spawned first so sample placement can avoid them
-                const obsList: { id: string; x: number; y: number; z: number; radius: number}[] = [];
-                for (let i = 0; i < OBSTACLE_DIRECTIONS.length; i++) {
-                    const [dx, dy, dz, radius] = OBSTACLE_DIRECTIONS[i % OBSTACLE_DIRECTIONS.length];
-                    try {
-                        const r = get_surface_point_in_direction(dx, dy, dz);
-                        obsList.push({ id: `o-${i}`, x: r.position[0], y: r.position[1], z: r.position[2], radius });
-                    } catch (_) {}
-                }
-                setObstacles(obsList);
-
-                // Samples — randomly placed on the asteroid surface, skipping obstacle zones
-                const sampleList: { id: string; x: number; y: number; z: number; model: SampleModel; rotation: string }[] = [];
-                const MIN_SAMPLE_SPACING = 1.5;
-                const MAX_ATTEMPTS = modeCfg.spawnSamples * 100;
-
-                // Build a shuffled queue of model types (6 crystal / 7 ore / 7 rock for n=20)
-                const n = modeCfg.spawnSamples;
-                const base = Math.floor(n / 3);
-                const extra = n % 3;
-                const modelQueue: SampleModel[] = [
-                    ...Array<SampleModel>(base).fill('crystal'),
-                    ...Array<SampleModel>(base + (extra >= 1 ? 1 : 0)).fill('ore'),
-                    ...Array<SampleModel>(base + (extra >= 2 ? 1 : 0)).fill('rock'),
-                ];
-                for (let i = modelQueue.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [modelQueue[i], modelQueue[j]] = [modelQueue[j], modelQueue[i]];
-                }
-
+            if (meshLoaded && (gameState === 'WEB_GAME' || gameState === 'AR_MODE')) {
+                // Samples — randomly placed on the asteroid surface; retry on raycast miss
+                const sampleList: { id: string; x: number; y: number; z: number }[] = [];
+                const MAX_ATTEMPTS = modeCfg.spawnSamples * 10;
                 let attempts = 0;
                 while (sampleList.length < modeCfg.spawnSamples && attempts < MAX_ATTEMPTS) {
                     attempts++;
                     const dir = randomUnitVector();
                     try {
                         const r = get_surface_point_in_direction(dir[0], dir[1], dir[2]);
-                        const insideObstacle = obsList.some(o => {
-                            const dx = r.position[0] - o.x;
-                            const dy = r.position[1] - o.y;
-                            const dz = r.position[2] - o.z;
-                            return dx * dx + dy * dy + dz * dz < o.radius * o.radius;
-                        });
-                        const tooClose = sampleList.some(s => {
-                            const dx = r.position[0] - s.x;
-                            const dy = r.position[1] - s.y;
-                            const dz = r.position[2] - s.z;
-                            return dx * dx + dy * dy + dz * dz < MIN_SAMPLE_SPACING * MIN_SAMPLE_SPACING;
-                        });
-                        if (!insideObstacle && !tooClose) {
-                            // Align sample local +Y with the surface normal (approximated by position-from-origin),
-                            // then add a random yaw around that normal for visual variety.
-                            const px = r.position[0], py = r.position[1], pz = r.position[2];
-                            const normal = new THREE.Vector3(px, py, pz).normalize();
-                            const alignQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
-                            const yawQ = new THREE.Quaternion().setFromAxisAngle(normal, Math.random() * Math.PI * 2);
-                            alignQ.premultiply(yawQ);
-                            const e = new THREE.Euler().setFromQuaternion(alignQ, 'YXZ');
-                            const R2D = 180 / Math.PI;
-                            const rotation = `${e.x * R2D} ${e.y * R2D} ${e.z * R2D}`;
-                            sampleList.push({ id: `s-${sampleList.length}`, x: px, y: py, z: pz, model: modelQueue[sampleList.length], rotation });
-                        }
+                        sampleList.push({ id: `s-${sampleList.length}`, x: r.position[0], y: r.position[1], z: r.position[2] });
                     } catch (_) { }
                 }
                 setSamples(sampleList);
                 const arrowElStart = document.getElementById('sample-arrow') as any;
                 if (arrowElStart) arrowElStart.setAttribute('visible', 'true');
 
-                energyRef.current = MAX_ENERGY;
-                setEnergy(MAX_ENERGY);
-                wasInObstacleRef.current = false;
-                endTriggeredRef.current = false;
+                // Obstacles (visual only for now)
+                const obsList: { id: string; x: number; y: number; z: number; radius: number}[] = [];
+                for (let i = 0; i < OBSTACLE_DIRECTIONS.length; i++) {
+                    const [dx, dy, dz, radius] = OBSTACLE_DIRECTIONS[i % OBSTACLE_DIRECTIONS.length];
+                    
+                    try {
+                        const r = get_surface_point_in_direction(dx, dy, dz);
+                        obsList.push({
+                            id: `o-${i}`,
+                            x: r.position[0],
+                            y: r.position[1],
+                            z: r.position[2],
+                            radius,
+                        });
+                    } catch (_) {}
+                }
+                setObstacles(obsList);
+
+                energyRef.current = 100;
+                setEnergy(100);
             } else {
                 setSamples([]);
                 setObstacles([]);
@@ -778,56 +887,77 @@ const App = () => {
                 if (arrowElStop) arrowElStop.setAttribute('visible', 'false');
             }
         }
-    }, [gameState, meshLoaded]);
+    }, [gameState, meshLoaded, modeCfg.spawnSamples]);
 
-    /** Trigger end screen when all samples collected or energy depleted. */
+    /** Trigger end screen when all samples collected or energy depleted (web or AR). */
     useEffect(() => {
-        if (gameState !== 'WEB_GAME' || endTriggeredRef.current) return;
+        if ((gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') || showEndScreen) return;
         if (samplesCollected >= modeCfg.spawnSamples) {
-            endTriggeredRef.current = true;
-            const bonus = modeCfg.energyBonusEnabled ? Math.round((energyRef.current / MAX_ENERGY) * 1000) : 0;
-            setEnergyBonus(bonus);
-            setScore(s => s + bonus);
             setEndReason('complete');
             setShowEndScreen(true);
         } else if (modeCfg.energyEnabled && energy <= 0) {
-            endTriggeredRef.current = true;
-            setEnergyBonus(0);
             setEndReason('energy');
             setShowEndScreen(true);
         }
-    }, [samplesCollected, energy, gameState]);
+    }, [samplesCollected, energy, gameState, showEndScreen, modeCfg.spawnSamples, modeCfg.energyEnabled]);
 
     /** Keyboard listeners and rover init: snap to surface before revealing scene. */
     useEffect(() => {
         if ((gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') || !meshLoaded) {
             return () => { };
         }
+        let cancelled = false;
+        let retryTimer: number | null = null;
+
+        const scheduleRetry = () => {
+            if (cancelled) return;
+            retryTimer = window.setTimeout(initRover, 100);
+        };
 
         const initRover = () => {
-            const rover = document.getElementById('rover') as any;
-            if (!rover) return;
+            if (cancelled) return;
+            const roverId = gameState === 'AR_MODE' ? 'ar-rover' : 'rover';
+            const rover = document.getElementById(roverId) as any;
+            if (!rover) {
+                scheduleRetry();
+                return;
+            }
 
             try {
+                let result: any;
+                if (gameState === 'AR_MODE') {
+                    // Deterministic AR spawn on asteroid surface relative to marker anchor.
+                    result = get_surface_point_in_direction(
+                        AR_ROVER_START_DIRECTION[0],
+                        AR_ROVER_START_DIRECTION[1],
+                        AR_ROVER_START_DIRECTION[2]
+                    );
+                } else {
                 const pos = rover.getAttribute('position');
-                const result = move_rover_on_asteroid(0, 0, 0, pos.x, pos.y, pos.z);
+                    result = move_rover_on_asteroid(0, 0, 0, pos.x, pos.y, pos.z);
+                }
+                const [px, py, pz] = gameState === 'AR_MODE'
+                    ? pushOutFromCenter(result.position[0], result.position[1], result.position[2], arSurfaceOffset)
+                    : [result.position[0], result.position[1], result.position[2]];
 
                 rover.setAttribute('position', {
-                    x: result.position[0],
-                    y: result.position[1],
-                    z: result.position[2]
+                    x: px,
+                    y: py,
+                    z: pz
                 });
 
                 const [ix, iy] = lastDirectionRef.current;
-                const { right, up } = getCameraFrame(result.position[0], result.position[1], result.position[2]);
+                const { right, up } = getCameraFrame(px, py, pz);
                 const dir = up.clone().multiplyScalar(iy).addScaledVector(right, ix);
-                updateRoverRotation(rover, result.position[0], result.position[1], result.position[2], dir.x, dir.y, dir.z);
-                updateCamera(result.position[0], result.position[1], result.position[2]);
+                updateRoverRotation(rover, px, py, pz, dir.x, dir.y, dir.z);
+                if (gameState !== 'AR_MODE') {
+                    updateCamera(px, py, pz);
+                }
 
                 setRoverReady(true);
             } catch (e) {
                 console.error("Rover init failed:", e);
-                setTimeout(initRover, 100);
+                scheduleRetry();
             }
         };
 
@@ -835,26 +965,28 @@ const App = () => {
 
         const validKeys = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 
-        const onKeyDown = (e: KeyboardEvent) => {
+            const onKeyDown = (e: KeyboardEvent) => {
             if (showIntroPopupRef.current) return;
-            const key = e.key.toLowerCase();
-            if (!validKeys.has(key)) return;
-            e.preventDefault();
-            keysHeld.current.add(key);
-            if (moveLoopId.current === null) {
-                moveLoopId.current = requestAnimationFrame(movementLoop);
-            }
-        };
+                const key = e.key.toLowerCase();
+                if (!validKeys.has(key)) return;
+                e.preventDefault();
+                keysHeld.current.add(key);
+                if (moveLoopId.current === null) {
+                    moveLoopId.current = requestAnimationFrame(movementLoop);
+                }
+            };
 
-        const onKeyUp = (e: KeyboardEvent) => {
-            keysHeld.current.delete(e.key.toLowerCase());
-        };
+            const onKeyUp = (e: KeyboardEvent) => {
+                keysHeld.current.delete(e.key.toLowerCase());
+            };
 
-        window.addEventListener('keydown', onKeyDown);
-        window.addEventListener('keyup', onKeyUp);
+            window.addEventListener('keydown', onKeyDown);
+            window.addEventListener('keyup', onKeyUp);
 
         return () => {
+            cancelled = true;
             clearTimeout(t);
+            if (retryTimer !== null) window.clearTimeout(retryTimer);
             window.removeEventListener('keydown', onKeyDown);
             window.removeEventListener('keyup', onKeyUp);
             if (moveLoopId.current !== null) {
@@ -863,24 +995,159 @@ const App = () => {
             }
             keysHeld.current.clear();
         };
-    }, [gameState, meshLoaded, movementLoop]);
+    }, [gameState, meshLoaded, movementLoop, arSurfaceOffset]);
 
-    /** AR mode: show/hide scan prompt based on marker visibility. */
+    /** AR calibration source: center offsets from solved marker reports/config. */
     useEffect(() => {
-        if (gameState === 'AR_MODE') {
-            const arTarget = document.getElementById('ar-target');
-            if (arTarget) {
-                arTarget.addEventListener('targetFound', () => {
-                    console.log("AR Marker found!");
-                    setScanPrompt(false);
-                });
-                arTarget.addEventListener('targetLost', () => {
-                    console.log("AR Marker lost");
-                    setScanPrompt(true);
-                });
+        if (gameState !== 'AR_MODE') return;
+        let cancelled = false;
+        (async () => {
+            try {
+                let byId: Record<number, number[]> = {};
+                let centerFromSource: MarkerOffset | undefined;
+
+                try {
+                    const sr = await fetch(`${import.meta.env.BASE_URL}surface_pair_report.json?ts=${Date.now()}`);
+                    if (sr.ok) {
+                        const report = await sr.json();
+                        const parsed = parsePosesFromReport(report);
+                        if (parsed) {
+                            byId = parsed.byId;
+                            centerFromSource = parsed.center;
+                        }
+                    }
+                } catch {
+                    // optional file
+                }
+
+                try {
+                    if (Object.keys(byId).length === 0) {
+                        const rr = await fetch(`${import.meta.env.BASE_URL}table_rotation_report.json?ts=${Date.now()}`);
+                        if (rr.ok) {
+                            const report = await rr.json();
+                            const parsed = parsePosesFromReport(report);
+                            if (parsed) {
+                                byId = parsed.byId;
+                                centerFromSource = parsed.center;
+                            }
+                        }
+                    }
+                } catch {
+                    // optional file
+                }
+
+                if (Object.keys(byId).length === 0) {
+                    const res = await fetch(`${import.meta.env.BASE_URL}config.json`);
+                    const json = await res.json();
+                    byId = parsePosesFromConfig(json);
+                }
+
+                const tablePoses = TABLE_MARKER_IDS.map((id) => byId[id]).filter(Boolean) as number[][];
+                if (tablePoses.length === 0) {
+                    if (!cancelled) setCenterOffsetsById({});
+                    return;
+                }
+
+                const tablePts = tablePoses.map((pose) => translationFromPose(pose));
+                const centerGlobal: MarkerOffset =
+                    centerFromSource ?? {
+                        x: tablePts.reduce((s, p) => s + p.x, 0) / tablePts.length,
+                        y: tablePts.reduce((s, p) => s + p.y, 0) / tablePts.length,
+                        z: tablePts.reduce((s, p) => s + p.z, 0) / tablePts.length,
+                    };
+
+                const next: Record<number, MarkerOffset> = {};
+                for (const id of ALL_MARKER_IDS) {
+                    const pose = byId[id];
+                    if (!pose) continue;
+                    const offM = centerOffsetInMarkerLocalFromPose(pose, centerGlobal);
+                    next[id] = {
+                        x: offM.x / MARKER_SIZE_METERS,
+                        y: offM.y / MARKER_SIZE_METERS,
+                        z: offM.z / MARKER_SIZE_METERS,
+                    };
+                }
+                if (!cancelled) setCenterOffsetsById(next);
+            } catch {
+                if (!cancelled) setCenterOffsetsById({});
             }
-        }
+        })();
+        return () => {
+            cancelled = true;
+        };
     }, [gameState]);
+
+    /** AR marker visibility tracking for anchor selection. */
+    useEffect(() => {
+        if (gameState !== 'AR_MODE') return;
+        const els = ALL_MARKER_IDS.map((id) => document.querySelector(`a-marker[type="barcode"][value="${id}"]`));
+        const onFound = (id: number) => () => setArVisibleIds((prev) => new Set(prev).add(id));
+        const onLost = (id: number) => () =>
+            setArVisibleIds((prev) => {
+                const next = new Set(prev);
+                next.delete(id);
+                return next;
+            });
+        const cleanups: Array<() => void> = [];
+        for (let i = 0; i < ALL_MARKER_IDS.length; i++) {
+            const id = ALL_MARKER_IDS[i];
+            const el = els[i] as any;
+            if (!el) continue;
+            const f = onFound(id);
+            const l = onLost(id);
+            el.addEventListener('markerFound', f);
+            el.addEventListener('markerLost', l);
+            cleanups.push(() => {
+                el.removeEventListener('markerFound', f);
+                el.removeEventListener('markerLost', l);
+            });
+        }
+        return () => cleanups.forEach((fn) => fn());
+    }, [gameState]);
+
+    /** AR marker visibility poll fallback + scan prompt behavior. */
+    useEffect(() => {
+        if (gameState !== 'AR_MODE') return;
+        const interval = window.setInterval(() => {
+            const now = Date.now();
+            const next = new Set<number>();
+            for (const id of ALL_MARKER_IDS) {
+                const el = document.querySelector(`a-marker[type="barcode"][value="${id}"]`) as any;
+                const isVisible = Boolean(el?.object3D?.visible);
+                if (isVisible) {
+                    arLastSeenMsRef.current[id] = now;
+                    next.add(id);
+                    continue;
+                }
+                const lastSeen = arLastSeenMsRef.current[id] ?? 0;
+                if (now - lastSeen <= markerLostGraceMs) next.add(id);
+            }
+            setArVisibleIds((prev) => (setsEqual(prev, next) ? prev : next));
+            setScanPrompt(next.size === 0);
+        }, 120);
+        return () => window.clearInterval(interval);
+    }, [gameState]);
+
+    /** Stable anchor selection for calibrated center projection. */
+    useEffect(() => {
+        if (gameState !== 'AR_MODE') return;
+        if (arAnchorHoldTimeoutRef.current !== null) {
+            window.clearTimeout(arAnchorHoldTimeoutRef.current);
+            arAnchorHoldTimeoutRef.current = null;
+        }
+        if (arVisibleIds.has(4)) {
+            setArAnchorId(4);
+            return;
+        }
+        if (arAnchorId !== null && arVisibleIds.has(arAnchorId)) return;
+        const next = ALL_MARKER_IDS.find((id) => arVisibleIds.has(id)) ?? null;
+        arAnchorHoldTimeoutRef.current = window.setTimeout(() => {
+            setArAnchorId(next);
+            arAnchorHoldTimeoutRef.current = null;
+        }, anchorSwitchDebounceMs);
+    }, [gameState, arVisibleIds, arAnchorId]);
+
+    const activeAnchorId = arAnchorId;
 
     return (
         <div className="ar-container">
@@ -939,7 +1206,7 @@ const App = () => {
                     <h1>Psyche</h1>
                     <p className="subtitle">Explore • Navigate • Discover</p>
                     <div className="button-container">
-                        <button id="play-button" ref={playBtnRef} onClick={() => setShowDifficulty(true)} disabled={!meshLoaded}>
+                        <button id="play-button" ref={playBtnRef} onClick={() => { setLaunchMissionInAr(false); setShowDifficulty(true); }} disabled={!meshLoaded}>
                             {meshLoaded ? 'Launch Mission' : 'Loading...'}
                         </button>
                         <button id="start-button" ref={arBtnRef} onClick={() => handleStart('ar')}>AR Experience</button>
@@ -949,6 +1216,15 @@ const App = () => {
                         <div className="difficulty-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-hidden={!showDifficulty}>
                             <h2 className="difficulty-title">Select Difficulty</h2>
                             <p className="difficulty-sub">Choose how challenging the mission will be.</p>
+
+                            <label className="difficulty-ar-option" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', cursor: 'pointer' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={launchMissionInAr}
+                                    onChange={(e) => setLaunchMissionInAr(e.target.checked)}
+                                />
+                                <span>Play in AR (camera + markers)</span>
+                            </label>
 
                             <div className="difficulty-buttons" onKeyDown={(e) => {
                                 // Trap Tab navigation between the three difficulty buttons
@@ -963,9 +1239,9 @@ const App = () => {
                                     refs[next].current?.focus();
                                 }
                             }}>
-                                <button ref={diffBtnRefs[0]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game', 'easy'); }}>Story</button>
-                                <button ref={diffBtnRefs[1]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game', 'normal'); }}>Standard</button>
-                                <button ref={diffBtnRefs[2]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart('web_game', 'hard'); }}>Challenge</button>
+                                <button ref={diffBtnRefs[0]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart(launchMissionInAr ? 'ar' : 'web_game', 'easy'); }}>Easy</button>
+                                <button ref={diffBtnRefs[1]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart(launchMissionInAr ? 'ar' : 'web_game', 'normal'); }}>Normal</button>
+                                <button ref={diffBtnRefs[2]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart(launchMissionInAr ? 'ar' : 'web_game', 'hard'); }}>Hard</button>
                             </div>
                         </div>
                     </div>
@@ -1013,34 +1289,229 @@ const App = () => {
                     {/* AR Scene with Camera Access */}
                     <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0 }}>
                         <a-scene
-                            mindar-image="imageTargetSrc: https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind;"
-                            color-space="sRGB"
-                            renderer="colorManagement: true"
+                            embedded 
+                            style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }}
+                            arjs="sourceType: webcam; detectionMode: mono_and_matrix; matrixCodeType: 3x3_HAMMING63; patternRatio: 0.52;"
                             vr-mode-ui="enabled: false"
-                            device-orientation-permission-ui="enabled: false"
+                            renderer="logarithmicDepthBuffer: true;"
                         >
                             <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+                            
+                            {TABLE_MARKER_IDS.map((id) => {
+                                const c = centerOffsetsById[id] ?? { x: 0, y: 0, z: 0 };
+                                            return (
+                                    <a-marker
+                                        key={id}
+                                        type="barcode"
+                                        value={id}
+                                        size={MARKER_SIZE_METERS}
+                                        smooth="true"
+                                        smoothCount="18"
+                                        smoothTolerance="0.008"
+                                        smoothThreshold="4"
+                                    >
+                                        <a-box
+                                            position={`${markerOverlayShiftX} ${markerPlaneOffset + markerOverlayDepth / 2} ${markerOverlayShiftZ}`}
+                                            rotation="-90 0 0"
+                                            width={markerOverlayWidth}
+                                            height={markerOverlayDepth}
+                                            depth={markerOverlayHeight}
+                                            material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double"
+                                        />
 
-                            <a-entity id="ar-target" mindar-image-target="targetIndex: 0">
-                                {/* Asteroid - scaled for AR marker */}
-                                <a-entity position="0 0 0" rotation="0 0 0">
-                                    <a-gltf-model
-                                        src="./models/AsteroidPsyche.glb"
-                                        scale="0.5 0.5 0.5"
-                                        position="0 0 0"
-                                    ></a-gltf-model>
+                                        {activeAnchorId === id && (
+                                            <a-entity position={`${c.x} ${c.y} ${c.z}`}>
+                                <a-entity
+                                                    position={`0 ${modelLift} ${modelBack}`}
+                                                    rotation={`${modelPitchOffsetDeg} ${modelYawOffsetDeg} ${modelRollOffsetDeg}`}
+                                                    scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
+                                                >
+                                                    {showArAsteroid && (
+                                                        <a-entity position={arAsteroidGltfPosition} scale={arAsteroidGltfScale}>
+                                                            <a-gltf-model src="./models/AsteroidPsyche.glb" />
+                                                        </a-entity>
+                                                    )}
+
+                                                    {samples.map((s) => (
+                                        <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
+                                                            <a-sphere radius={arSampleRadius} color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                        </a-entity>
+                                    ))}
+
+                                                    {obstacles.map((o) => (
+                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
+                                                            <a-sphere radius={o.radius / arObstacleParentScaleMean} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
+                                        </a-entity>
+                                    ))}
+
+                                                    <a-entity id="sample-arrow" visible="false">
+                                                        <a-entity animation="property: scale; from: 1 1 1; to: 1.35 1.35 1.35; loop: true; dir: alternate; dur: 500; easing: easeInOutSine">
+                                                            <a-cone
+                                                                height={arArrowConeHeight}
+                                                                radius-bottom={arArrowConeRadiusBottom}
+                                                                radius-top="0"
+                                                                color="#FFD700"
+                                                                position={`0 ${arArrowConeY} 0`}
+                                                                material="emissive: #FFD700; emissiveIntensity: 0.55; transparent: true; opacity: 0.95"
+                                                            />
+                                                            <a-cylinder
+                                                                radius={arArrowCylRadius}
+                                                                height={arArrowCylHeight}
+                                                                color="#FFD700"
+                                                                position={`0 ${arArrowCylY} 0`}
+                                                                material="emissive: #FFD700; emissiveIntensity: 0.35; transparent: true; opacity: 0.8"
+                                                            />
+                                    </a-entity>
                                 </a-entity>
 
-                                {/* Rover on asteroid */}
-                                <a-entity id="rover" position="0 0.3 0" rotation="0 0 0">
-                                    <a-gltf-model
-                                        src="./models/craft_racer.glb"
-                                        scale="0.05 0.05 0.05"
-                                    ></a-gltf-model>
-                                </a-entity>
-                            </a-entity>
+                                                    <a-entity
+                                                        id="ar-rover"
+                                                        position="0 0 0"
+                                                        rotation="0 0 0"
+                                                        scale={arRoverScaleStr}
+                                                    >
+                                                        <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="-0.25 -0.04 0"></a-box>
+                                                        <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="0.25 -0.04 0"></a-box>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 -0.2"></a-cylinder>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 0.2"></a-cylinder>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 -0.2"></a-cylinder>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 0.2"></a-cylinder>
+                                                        <a-box width="0.4" height="0.32" depth="0.36" color="#B8963E" position="0 0.14 0"></a-box>
+                                                        <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 -0.18"></a-box>
+                                                        <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 0.18"></a-box>
+                                                        <a-box width="0.42" height="0.02" depth="0.38" color="#9E8438" position="0 0.31 0"></a-box>
+                                                        <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04"></a-cylinder>
+                                                        <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04" rotation="0 0 6"></a-cylinder>
+                                                        <a-box width="0.26" height="0.07" depth="0.07" color="#606060" position="0 0.52 -0.06"></a-box>
+                                                        <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="-0.08 0.52 -0.14"></a-cylinder>
+                                                        <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="0.08 0.52 -0.14"></a-cylinder>
+                                                        <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="-0.08 0.52 -0.21"></a-cylinder>
+                                                        <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="0.08 0.52 -0.21"></a-cylinder>
+                                                        <a-sphere radius="0.048" color="#6DB8D4" position="-0.08 0.52 -0.22"></a-sphere>
+                                                        <a-sphere radius="0.048" color="#6DB8D4" position="0.08 0.52 -0.22"></a-sphere>
+                                                        <a-sphere radius="0.025" color="#1A1A1A" position="-0.08 0.52 -0.25"></a-sphere>
+                                                        <a-sphere radius="0.025" color="#1A1A1A" position="0.08 0.52 -0.25"></a-sphere>
+                                                        <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="-0.24 0.14 -0.14"></a-box>
+                                                        <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="0.24 0.14 -0.14"></a-box>
+                                                        <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="-0.24 0.14 -0.25"></a-box>
+                                                        <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="0.24 0.14 -0.25"></a-box>
+                                                        <a-box width="0.08" height="0.02" depth="0.2" color="#555555" position="0 0.33 0"></a-box>
+                                                    </a-entity>
+                                                </a-entity>
+                                            </a-entity>
+                                        )}
+                                    </a-marker>
+                                );
+                            })}
+
+                            {SURFACE_MARKER_IDS.map((id) => {
+                                const c = centerOffsetsById[id] ?? { x: 0, y: 0, z: 0 };
+                                return (
+                                    <a-marker
+                                        key={id}
+                                        type="barcode"
+                                        value={id}
+                                        size={MARKER_SIZE_METERS}
+                                        smooth="true"
+                                        smoothCount="18"
+                                        smoothTolerance="0.008"
+                                        smoothThreshold="4"
+                                    >
+                                        <a-box
+                                            position={`${markerOverlayShiftX} ${markerPlaneOffset + markerOverlayDepth / 2} ${markerOverlayShiftZ}`}
+                                            rotation="-90 0 0"
+                                            width={markerOverlayWidth}
+                                            height={markerOverlayDepth}
+                                            depth={markerOverlayHeight}
+                                            material="color: #ff0000; shader: standard; metalness: 0.08; roughness: 0.75; side: double"
+                                        />
+
+                                        {activeAnchorId === id && (
+                                            <a-entity position={`${c.x} ${c.y} ${c.z}`}>
+                                                <a-entity
+                                                    position={`0 ${modelLift} ${modelBack}`}
+                                                    rotation={`${modelPitchOffsetDeg} ${modelYawOffsetDeg} ${modelRollOffsetDeg}`}
+                                                    scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
+                                                >
+                                                    {showArAsteroid && (
+                                                        <a-entity position={arAsteroidGltfPosition} scale={arAsteroidGltfScale}>
+                                                            <a-gltf-model src="./models/AsteroidPsyche.glb" />
+                                                        </a-entity>
+                                                    )}
+
+                                                    {samples.map((s) => (
+                                                        <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`}>
+                                                            <a-sphere radius={arSampleRadius} color="#7bffb2" material="transparent: true; opacity: 0.95" />
+                                                        </a-entity>
+                                                    ))}
+
+                                                    {obstacles.map((o) => (
+                                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
+                                                            <a-sphere radius={o.radius / arObstacleParentScaleMean} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
+                                                        </a-entity>
+                                                    ))}
+
+                                                    <a-entity id="sample-arrow" visible="false">
+                                                        <a-entity animation="property: scale; from: 1 1 1; to: 1.35 1.35 1.35; loop: true; dir: alternate; dur: 500; easing: easeInOutSine">
+                                                            <a-cone
+                                                                height={arArrowConeHeight}
+                                                                radius-bottom={arArrowConeRadiusBottom}
+                                                                radius-top="0"
+                                                                color="#FFD700"
+                                                                position={`0 ${arArrowConeY} 0`}
+                                                                material="emissive: #FFD700; emissiveIntensity: 0.55; transparent: true; opacity: 0.95"
+                                                            />
+                                                            <a-cylinder
+                                                                radius={arArrowCylRadius}
+                                                                height={arArrowCylHeight}
+                                                                color="#FFD700"
+                                                                position={`0 ${arArrowCylY} 0`}
+                                                                material="emissive: #FFD700; emissiveIntensity: 0.35; transparent: true; opacity: 0.8"
+                                                            />
+                                                        </a-entity>
+                                                    </a-entity>
+
+                                                    <a-entity
+                                                        id="ar-rover"
+                                                        position="0 0 0"
+                                                        rotation="0 0 0"
+                                                        scale={arRoverScaleStr}
+                                                    >
+                                                        <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="-0.25 -0.04 0"></a-box>
+                                                        <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="0.25 -0.04 0"></a-box>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 -0.2"></a-cylinder>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 0.2"></a-cylinder>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 -0.2"></a-cylinder>
+                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 0.2"></a-cylinder>
+                                                        <a-box width="0.4" height="0.32" depth="0.36" color="#B8963E" position="0 0.14 0"></a-box>
+                                                        <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 -0.18"></a-box>
+                                                        <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 0.18"></a-box>
+                                                        <a-box width="0.42" height="0.02" depth="0.38" color="#9E8438" position="0 0.31 0"></a-box>
+                                                        <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04"></a-cylinder>
+                                                        <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04" rotation="0 0 6"></a-cylinder>
+                                                        <a-box width="0.26" height="0.07" depth="0.07" color="#606060" position="0 0.52 -0.06"></a-box>
+                                                        <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="-0.08 0.52 -0.14"></a-cylinder>
+                                                        <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="0.08 0.52 -0.14"></a-cylinder>
+                                                        <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="-0.08 0.52 -0.21"></a-cylinder>
+                                                        <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="0.08 0.52 -0.21"></a-cylinder>
+                                                        <a-sphere radius="0.048" color="#6DB8D4" position="-0.08 0.52 -0.22"></a-sphere>
+                                                        <a-sphere radius="0.048" color="#6DB8D4" position="0.08 0.52 -0.22"></a-sphere>
+                                                        <a-sphere radius="0.025" color="#1A1A1A" position="-0.08 0.52 -0.25"></a-sphere>
+                                                        <a-sphere radius="0.025" color="#1A1A1A" position="0.08 0.52 -0.25"></a-sphere>
+                                                        <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="-0.24 0.14 -0.14"></a-box>
+                                                        <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="0.24 0.14 -0.14"></a-box>
+                                                        <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="-0.24 0.14 -0.25"></a-box>
+                                                        <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="0.24 0.14 -0.25"></a-box>
+                                                        <a-box width="0.08" height="0.02" depth="0.2" color="#555555" position="0 0.33 0"></a-box>
+                                                    </a-entity>
+                                                </a-entity>
+                                            </a-entity>
+                                        )}
+                                    </a-marker>
+                                );
+                            })}
                         </a-scene>
-                    </div>
+                                </div>
 
                     <div id="ui-overlay" style={{ display: 'block' }}>
                         {scanPrompt && (
@@ -1050,13 +1521,103 @@ const App = () => {
                         )}
 
                         <div id="score-display">
-                            SCORE <span id="score">{score}</span>
-                        </div>
+                                    SCORE <span id="score">{score}</span>
+                                </div>
 
                         <div className="mode-ui">
-                            {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div></div>}
-                            <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
-                        </div>
+                            {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${energy}%` }} /></div></div>}
+                                    <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span> / {modeCfg.spawnSamples}</div>
+                                </div>
+
+                        {waypointPopup && (
+                            <div
+                                id="waypoint-popup"
+                                role="dialog"
+                                aria-modal="true"
+                                onClick={() => setWaypointPopup(null)}
+                            >
+                                <div
+                                    className="popup-container"
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    {waypointPopup.image && (
+                                        <div className="popup-image-panel">
+                                            <img src={waypointPopup.image} alt="Waypoint visual" />
+                                        </div>
+                                    )}
+                                    <div className="popup-text-panel">
+                                        <div className="waypoint-popup-title">{waypointPopup.title}</div>
+                                        {waypointPopup.body && (
+                                            <div className="waypoint-popup-body">{waypointPopup.body}</div>
+                                        )}
+                                        <div className="popup-hint">Click outside to close</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {showEndScreen && (
+                            <div className="end-overlay" role="dialog" aria-modal="true">
+                                <div className="end-modal">
+                                    <h2 className="end-title">
+                                        {endReason === 'complete' ? 'Mission Complete!' : 'Out of Energy'}
+                                    </h2>
+                                    <p className="end-subtitle">
+                                        {endReason === 'complete'
+                                            ? 'All samples have been recovered from the surface of Psyche.'
+                                            : "Your rover's battery has been depleted. Mission over."}
+                                    </p>
+                                    <div className="end-stats">
+                                        <div className="end-stat">
+                                            <span className="end-stat-label">Samples Collected</span>
+                                            <span className="end-stat-value">{samplesCollected} / {modeCfg.spawnSamples}</span>
+                                        </div>
+                                        <div className="end-stat">
+                                            <span className="end-stat-label">Final Score</span>
+                                            <span className="end-stat-value">{score}</span>
+                                        </div>
+                                    </div>
+                                    <button className="end-menu-btn" onClick={returnToMenu}>
+                                        Return to Main Menu
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {showIntroPopup && (
+                            <div
+                                className="intro-overlay"
+                                onClick={() => { if (introPopupCanClose) closeIntroPopup(); }}
+                                role="dialog"
+                                aria-modal="true"
+                            >
+                                <div className="intro-modal" onClick={(e) => e.stopPropagation()}>
+                                    <h2 className="intro-title">{INTRO_CONTENT[difficulty].welcome}</h2>
+                                    <div className="intro-section">
+                                        <h3 className="intro-section-heading">Controls</h3>
+                                        <div className="intro-controls-grid">
+                                            <span className="key-hint">W / A / S / D</span><span>Move rover</span>
+                                            <span className="key-hint">Arrow Keys</span><span>Move rover</span>
+                                            <span className="key-hint">D-pad</span><span>Move rover (mobile/touch)</span>
+                                        </div>
+                                    </div>
+                                    <div className="intro-section">
+                                        <p className="intro-description">{INTRO_CONTENT[difficulty].description}</p>
+                                        <p className="intro-description" style={{ marginTop: '0.75rem', opacity: 0.9 }}>
+                                            In AR, point the camera at your markers until the scene locks on, then use the same controls to drive on the asteroid.
+                                        </p>
+                                    </div>
+                                    <button
+                                        className={`intro-close-btn${introPopupCanClose ? '' : ' locked'}`}
+                                        onClick={() => { if (introPopupCanClose) closeIntroPopup(); }}
+                                        disabled={!introPopupCanClose}
+                                    >
+                                        {introPopupCanClose ? 'Begin Mission' : 'Reading...'}
+                                    </button>
+                                    {introPopupCanClose && (
+                                        <p className="intro-dismiss-hint">Press Enter or click outside to dismiss</p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
 
                         <div id="controls">
                             <div
@@ -1073,6 +1634,8 @@ const App = () => {
 
             {gameState === 'WEB_GAME' && (
                 <>
+                    {/* Mode banner shows active mode and difficulty */}
+                    <div className="mode-banner">WEB GAME — {difficulty.toUpperCase()}</div>
                     {/* Web Game Scene - hidden until rover is snapped to surface */}
                     <div style={{
                         position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0,
@@ -1085,13 +1648,13 @@ const App = () => {
                             background="color: #000011"
                         >
                             {/* Follow Camera */}
-                            <a-camera
+                            <a-camera 
                                 id="follow-camera"
                                 position="0 0 5"
-                                look-controls="enabled: false"
+                                look-controls="enabled: false" 
                                 wasd-controls="enabled: false"
                             ></a-camera>
-
+                            
                             {/* Helper markers */}
                             <a-sphere position="0 0 0" radius="0.2" color="yellow"></a-sphere>
                             <a-text value="ORIGIN" position="0 0.5 0" scale="1 1 1" color="yellow" align="center"></a-text>
@@ -1119,29 +1682,30 @@ const App = () => {
                                 ))}
                             </a-entity>
 
-                            {/* VISUAL ASTEROID */}
-                            <a-entity
-                                id="asteroid"
+                            {/* VISUAL ASTEROID - hidden */}
+                            <a-entity 
+                                id="asteroid" 
                                 position="0 0 0"
                                 rotation="0 0 0"
+                                visible="false"
                             >
-                                <a-gltf-model
+                                <a-gltf-model 
                                     id="asteroid-model"
-                                    src="./models/AsteroidPsyche.glb"
+                                    src="./models/AsteroidPsyche.glb" 
                                     scale="2.5 2.5 2.5"
                                     position="-3.75 -2.2 3.22"
                                 ></a-gltf-model>
                             </a-entity>
 
                             {/* COLLISION MESH - hidden (only used by Rust raycasting) */}
-                            <a-entity
+                            <a-entity 
                                 id="collision-viz"
                                 position="0 0 0"
                                 rotation="0 0 0"
                                 visible="false"
                             >
-                                <a-gltf-model
-                                    src="./models/AsteroidPsyche_Collision.glb"
+                                <a-gltf-model 
+                                    src="./models/AsteroidPsyche_Collision.glb" 
                                     scale="2.5 2.5 2.5"
                                     position="-3.75 -2.2 3.22"
                                 ></a-gltf-model>
@@ -1149,8 +1713,8 @@ const App = () => {
 
                             {/* Samples (collectibles) */}
                             {samples.map(s => (
-                                <a-entity key={s.id} position={`${s.x} ${s.y} ${s.z}`} rotation={s.rotation}>
-                                    <a-gltf-model src={`./models/${s.model}.glb`} scale="0.2 0.2 0.2" />
+                                <a-entity key={s.id} position={`${s.x} ${s.y} ${s.z}`}>
+                                    <a-sphere radius="0.05" color="#7bffb2" material="transparent: true; opacity: 0.95" />
                                 </a-entity>
                             ))}
 
@@ -1242,7 +1806,7 @@ const App = () => {
                             SCORE <span id="score">{score}</span>
                         </div>
                         <div className="mode-ui">
-                            {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div></div>}
+                            {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${energy}%` }} /></div></div>}
                             <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
                         </div>
                         {/* WAYPOINT POPUP */}
@@ -1295,12 +1859,6 @@ const App = () => {
                                             <span className="end-stat-label">Samples Collected</span>
                                             <span className="end-stat-value">{samplesCollected} / {modeCfg.spawnSamples}</span>
                                         </div>
-                                        {energyBonus > 0 && (
-                                            <div className="end-stat">
-                                                <span className="end-stat-label">Energy Bonus</span>
-                                                <span className="end-stat-value">+{energyBonus}</span>
-                                            </div>
-                                        )}
                                         <div className="end-stat">
                                             <span className="end-stat-label">Final Score</span>
                                             <span className="end-stat-value">{score}</span>
