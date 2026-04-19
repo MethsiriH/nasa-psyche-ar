@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- App shell: A-Frame + AR.js; React mounts into #root.
+     ARToolKit C API (native) vs AR.js a-scene arjs= attribute:
+       arSetPatternDetectionMode(h, AR_MATRIX_CODE_DETECTION)
+         → detectionMode: mono_and_matrix (template + matrix; matrix uses AR_MATRIX_CODE_*)
+       arSetMatrixCodeType(h, AR_MATRIX_CODE_3x3_HAMMING63)
+         → matrixCodeType: 3x3_HAMMING63
+       arSetBorderSize(h, 0.24)  [border width per side as fraction of full marker width]
+         → patternRatio: 0.52  (inner pattern = 1 − 2×border; jsartoolkit setPattRatio)
+     labelingMode: black_region matches black-bordered markers on white (default).
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NASA Psyche AR</title>
+    <script src="/nasa-psyche-ar/vendor/aframe.min.js"></script>
+    <script src="/nasa-psyche-ar/vendor/aframe-ar.js"></script>
+    <script type="module" crossorigin src="/nasa-psyche-ar/assets/index-CYuHpc7A.js"></script>
+    <link rel="stylesheet" crossorigin href="/nasa-psyche-ar/assets/index-DyZBUW39.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
