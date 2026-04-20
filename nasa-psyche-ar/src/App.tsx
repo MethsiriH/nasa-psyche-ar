@@ -28,9 +28,14 @@ const MAX_ENERGY = 50;
 const AR_ROVER_SPEED_SCALE = 0.009375;
 /**
  * Flat AR: keep rover, samples, and obstacles inside this fraction of the mapped disk radius.
- * Matches the circular depth crop so gameplay stays on the reliable height / motion field, not the rim.
+ * Tighter than the full tap radius so content stays over the reliable gray snapshot / height field.
  */
-const AR_FLAT_PLAY_INNER_RADIUS_FR = 0.82;
+const AR_FLAT_PLAY_INNER_RADIUS_FR = 0.72;
+/**
+ * Flat AR: subtract this from heightmap-based Y so props read grounded on the print instead of
+ * hovering slightly above the displaced mesh.
+ */
+const AR_FLAT_SURFACE_Y_SINK = 0.022;
 /** Deterministic initial rover spawn direction in asteroid-local space for AR. */
 const AR_ROVER_START_DIRECTION: [number, number, number] = [0, 1, 0];
 
@@ -264,11 +269,12 @@ function stepOnFlatDisk(
     const dz = newZ - centerZ;
     const r = Math.hypot(dx, dz);
     const clampR = radius * AR_FLAT_PLAY_INNER_RADIUS_FR;
+    const y = height - AR_FLAT_SURFACE_Y_SINK;
     if (r <= clampR || r < 1e-6) {
-        return { x: newX, y: height, z: newZ };
+        return { x: newX, y, z: newZ };
     }
     const s = clampR / r;
-    return { x: centerX + dx * s, y: height, z: centerZ + dz * s };
+    return { x: centerX + dx * s, y, z: centerZ + dz * s };
 }
 
 /** Uniform-area sample within a disk — sqrt on the radius gives even distribution. */
@@ -419,7 +425,10 @@ function stepOnHeightmap(
         px = centerX + dx * s;
         pz = centerZ + dz * s;
     }
-    const py = diskY + (hm ? sampleHeightmap(hm, px - centerX, pz - centerZ, radius) : 0);
+    const py =
+        diskY
+        + (hm ? sampleHeightmap(hm, px - centerX, pz - centerZ, radius) : 0)
+        - AR_FLAT_SURFACE_Y_SINK;
     return { x: px, y: py, z: pz };
 }
 
@@ -1386,8 +1395,8 @@ const App = () => {
     const AR_ARROW_NORMAL_OFFSET_FR = 0.02;
     const AR_COLLECTION_RADIUS_FR = 0.125;
     const AR_ROVER_SURFACE_OFFSET_FR = 0.03;
-    // Halved again from 1.25 so rover + field read smaller on the print.
-    const AR_ROVER_DESIRED_SCALE_FR = 0.625;
+    // 0.625 × 1.5 — larger rover on the print while staying smaller than the original 1.25 baseline.
+    const AR_ROVER_DESIRED_SCALE_FR = 0.9375;
 
     const arSampleScale = markerOverlaySize * AR_SAMPLE_SCALE_FR;
     const arSampleScaleStr = `${arSampleScale} ${arSampleScale} ${arSampleScale}`;
@@ -2146,7 +2155,7 @@ const App = () => {
                         obsList.push({
                             id: `o-${i}`,
                             x: diskOffsetX + x,
-                            y: diskHeight + yOff,
+                            y: diskHeight + yOff - AR_FLAT_SURFACE_Y_SINK,
                             z: diskOffsetZ + z,
                             radius: baseRadius * 0.5,
                         });
@@ -2191,7 +2200,7 @@ const App = () => {
                             const hmS = terrainRef.current;
                             const yOff = hmS ? sampleHeightmap(hmS, pt.x, pt.z, diskRadius) : 0;
                             px = diskOffsetX + pt.x;
-                            py = diskHeight + yOff;
+                            py = diskHeight + yOff - AR_FLAT_SURFACE_Y_SINK;
                             pz = diskOffsetZ + pt.z;
                         } else {
                             const dir = randomUnitVector();
@@ -2322,7 +2331,7 @@ const App = () => {
                         px = flatSurfaceOffsetX;
                         const hmInit = terrainRef.current;
                         const yOffset = hmInit ? sampleHeightmap(hmInit, 0, 0, flatSurfaceRadius) : 0;
-                        py = flatSurfaceHeight + yOffset;
+                        py = flatSurfaceHeight + yOffset - AR_FLAT_SURFACE_Y_SINK;
                         pz = flatSurfaceOffsetZ;
                         roverPosRef.current = { x: px, y: py, z: pz };
                     } else {
@@ -2439,7 +2448,7 @@ const App = () => {
                     px = flatSurfaceOffsetXRef.current;
                     const hmAR = terrainRef.current;
                     const yOff = hmAR ? sampleHeightmap(hmAR, 0, 0, flatSurfaceRadiusRef.current) : 0;
-                    py = flatSurfaceHeightRef.current + yOff;
+                    py = flatSurfaceHeightRef.current + yOff - AR_FLAT_SURFACE_Y_SINK;
                     pz = flatSurfaceOffsetZRef.current;
                     roverPosRef.current = { x: px, y: py, z: pz };
                 } else {
@@ -2715,7 +2724,7 @@ const App = () => {
                     </div>
 
                     <div className="mission-badge">
-                        <div className="badge-label">NASA Capstone Project2020</div>
+                        <div className="badge-label">NASA Capstone Project2023</div>
                     </div>
                     <h1>Psyche</h1>
                     <p className="subtitle">Explore • Navigate • Discover</p>
@@ -3203,24 +3212,24 @@ const App = () => {
                                 style={{
                                     position: 'fixed',
                                     right: 14,
-                                    bottom: 118,
+                                    bottom: 218,
                                     zIndex: 1000,
                                     pointerEvents: 'none',
                                     textAlign: 'right',
                                 }}
                             >
-                                <div style={{ fontSize: 7, fontWeight: 700, letterSpacing: 0.35, color: '#b8e8ff', opacity: 0.9, marginBottom: 2 }}>
+                                <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.4, color: '#b8e8ff', opacity: 0.9, marginBottom: 4 }}>
                                     Depth (motion)
                                 </div>
                                 <img
                                     src={arDepthHeatmapUrl}
                                     alt=""
-                                    width={28}
-                                    height={28}
+                                    width={72}
+                                    height={72}
                                     style={{
-                                        borderRadius: 4,
+                                        borderRadius: 8,
                                         border: '1px solid rgba(123,255,178,0.35)',
-                                        boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
+                                        boxShadow: '0 6px 18px rgba(0,0,0,0.35)',
                                         display: 'block',
                                     }}
                                 />
