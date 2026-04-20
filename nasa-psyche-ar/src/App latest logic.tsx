@@ -2,7 +2,7 @@
  * NASA Psyche AR — Web/AR rover exploration experience.
  * Uses React + A-Frame for 3D, Rust/WASM for collision and movement.
  */
-import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import MODE_CONFIG, { Difficulty } from './modeConfig';
 // @ts-ignore
 import init, { start_ar_session, load_collision_mesh, move_rover_on_asteroid, get_surface_point_in_direction } from '../rust_engine/pkg/rust_engine';
@@ -21,10 +21,8 @@ const randomUnitVector = (): [number, number, number] => {
 
 const MOVE_INTERVAL = 33; // ms between movement ticks (~30 fps)
 const MAX_ENERGY = 50;
-/** AR rover moves at a smaller step size than web since the marker-anchored world is smaller.
- *  Tuned down so the rover crawls across the captured terrain and the physics has time to
- *  sample the heightmap faithfully at each tick. */
-const AR_ROVER_SPEED_SCALE = 0.01875;
+/** AR rover moves at a smaller step size than web since the marker-anchored world is smaller. */
+const AR_ROVER_SPEED_SCALE = 0.4;
 /** Deterministic initial rover spawn direction in asteroid-local space for AR. */
 const AR_ROVER_START_DIRECTION: [number, number, number] = [0, 1, 0];
 
@@ -59,37 +57,6 @@ type ArCalibration = {
     compensateScaleWithLift: boolean;
     /** Depth proxy = pivot − lift (marker units); default 0 matches “more negative Y = farther → scale up”. */
     liftDistancePivot: number;
-    /**
-     * Hide the virtual asteroid GLB in AR while keeping it alive as physics surface.
-     * User then sees the real 3D-printed asteroid through the camera with rover/crystals/obstacles
-     * riding the (invisible) digital twin. Toggle OFF during calibration to see virtual vs physical drift.
-     */
-    hideVirtualAsteroid: boolean;
-    /** Red 2"×2" reference cube on every marker — visible check for AR.js tracking & calibration math. */
-    showCalibrationCube: boolean;
-    /**
-     * When on (recommended for the printed prop), the rover walks on a flat horizontal disk anchored
-     * to the active marker instead of the full 3D asteroid surface. This matches the user's view — the
-     * physical print shows one face, so wrapping around a virtual sphere is invisible and confusing.
-     * Samples + obstacles are redistributed on the same disk. Disable to fall back to full-mesh physics.
-     */
-    flatSurfaceMode: boolean;
-    /** Flat disk radius in scaled-local units (inside the scale transform; tap-to-setup writes this). */
-    flatSurfaceRadius: number;
-    /** Disk height above the marker plane (scaled-local units). */
-    flatSurfaceHeight: number;
-    /** Disk center offset X in scaled-local units (set by the user's first tap during setup). */
-    flatSurfaceOffsetX: number;
-    /** Disk center offset Z in scaled-local units (set by the user's first tap during setup). */
-    flatSurfaceOffsetZ: number;
-    /** Visualize the flat disk (semi-transparent green ring). */
-    showFlatDisk: boolean;
-    /**
-     * **Visual only.** When true, the displaced snapshot mesh (`heightmap-terrain`) is not drawn,
-     * so you see the real print through the camera while the rover/samples still use the same
-     * heightmap (`terrainRef`, `sampleHeightmap`, `stepOnHeightmap`, etc.) — no change to math.
-     */
-    hideTerrainSurface: boolean;
 };
 
 /** Generates star data with uniform random distribution across a surrounding sphere. */
@@ -204,23 +171,10 @@ const AR_CALIBRATION_DEFAULTS: ArCalibration = {
     sampleScaleFr: 0.20,
     compensateScaleWithLift: false,
     liftDistancePivot: 0,
-    // "Digital twin" mode on by default: real asteroid visible through camera, rover/crystals on invisible twin.
-    hideVirtualAsteroid: true,
-    showCalibrationCube: false,
-    // Flat-surface mode by default — avoids wrap-around-sphere issue when only one face is visible.
-    flatSurfaceMode: true,
-    // Placeholder radius; the user's tap-to-map flow overwrites this before game start.
-    flatSurfaceRadius: (PHYSICAL_ASTEROID_BBOX_M.x / 2) / MARKER_SIZE_METERS,
-    flatSurfaceHeight: 0,
-    flatSurfaceOffsetX: 0,
-    flatSurfaceOffsetZ: 0,
-    showFlatDisk: false,
-    /** Start with overlay off so motion reads against the physical rock (toggle on to see the mesh). */
-    hideTerrainSurface: true,
 };
 
-// v7: hideTerrainSurface (visual-only mesh; heightmap math unchanged). Default true for new installs.
-const AR_CALIBRATION_STORAGE_KEY = 'nasa-psyche-ar-calibration-v7';
+// v3: physical 610×524×432 mm ↔ collision mesh bbox; 2" calibration cube (1 marker unit).
+const AR_CALIBRATION_STORAGE_KEY = 'nasa-psyche-ar-calibration-v3';
 
 const loadArCalibration = (): ArCalibration => {
     try {
@@ -236,463 +190,6 @@ const loadArCalibration = (): ArCalibration => {
 /** Positive “depth” proxy for lift compensation; pivot − lift, floored so we never divide by ~0. */
 function liftDepthForScreenCompensation(pivot: number, lift: number): number {
     return Math.max(0.25, pivot - lift);
-}
-
-/**
- * Planar rover step for flat-surface mode: walk on a horizontal disk of `radius` centered at
- * (centerX, height, centerZ) in the asteroid-parent frame. No raycasting, no wrap-around —
- * rover stays on the visible face of the physical print. Returns clamped position.
- */
-function stepOnFlatDisk(
-    current: { x: number; y: number; z: number },
-    moveX: number,
-    moveZ: number,
-    radius: number,
-    height: number,
-    centerX: number,
-    centerZ: number,
-): { x: number; y: number; z: number } {
-    const newX = current.x + moveX;
-    const newZ = current.z + moveZ;
-    const dx = newX - centerX;
-    const dz = newZ - centerZ;
-    const r = Math.hypot(dx, dz);
-    if (r <= radius || r < 1e-6) {
-        return { x: newX, y: height, z: newZ };
-    }
-    const s = radius / r;
-    return { x: centerX + dx * s, y: height, z: centerZ + dz * s };
-}
-
-/** Uniform-area sample within a disk — sqrt on the radius gives even distribution. */
-function randomPointOnDisk(radius: number): { x: number; z: number } {
-    const theta = Math.random() * Math.PI * 2;
-    const r = Math.sqrt(Math.random()) * radius;
-    return { x: Math.cos(theta) * r, z: Math.sin(theta) * r };
-}
-
-/**
- * A photographed terrain: once the player finishes tap-to-map setup we grab a frame, crop the
- * circular play zone, and convert it into a luminance-derived heightmap. Values are normalized
- * so roughly half of the range is above and half below the disk plane; `scaleY` scales that
- * range into scaled-local units (same coordinate frame the rover + samples live in).
- */
-export type TerrainHeightmap = {
-    data: Float32Array; // length = size*size, values in [0, 1] (0.5 = average height)
-    size: number;       // grid side (e.g. 96)
-    scaleY: number;     // world-space amplitude of height deviation around the disk plane
-    /**
-     * Peak height of the paraboloidal base dome — added to every sample so the terrain
-     * **wraps** around the physical asteroid instead of sitting flat on the marker. 0 means no
-     * dome (flat base + detail on top), larger values push the center of the disk upward.
-     */
-    domeHeight: number;
-    /**
-     * Exponent used to curve the detail heightmap. >1 exaggerates peaks; <1 softens them. 1.6
-     * gives a noticeably "wrinkled" surface without turning bumps into spikes.
-     */
-    detailGamma: number;
-    textureUrl: string; // data URL of the cropped snapshot (used to texture the terrain mesh)
-    sourceFrameW: number;
-    sourceFrameH: number;
-    centerPx: { x: number; y: number }; // circle center in source frame pixels
-    radiusPx: number;                    // circle radius in source frame pixels
-};
-
-/**
- * Bilinearly sample the heightmap at disk-local coordinates. `x` and `z` are offsets from the
- * disk's center in world units; `radius` is the disk radius in world units. Returns a height in
- * world units (scaleY baked in) — safe to feed directly into a Y position.
- */
-function sampleHeightmap(
-    hm: TerrainHeightmap,
-    x: number,
-    z: number,
-    radius: number,
-): number {
-    if (radius <= 0) return 0;
-    // Radial falloff (1 at center, 0 at rim) — used both to taper the dome and to fade the
-    // detail at the edges so the terrain dissolves cleanly into the marker plane.
-    const rho = Math.hypot(x, z) / radius;
-    const rhoClamped = Math.min(1, Math.max(0, rho));
-    // Spherical-cap profile √(1−ρ²): lifts the mid-disk more than a parabola so the play surface
-    // reads as a shallow dome “wrapping” the physical asteroid instead of a flat plate.
-    const domeFalloff = Math.sqrt(Math.max(0, 1 - rhoClamped * rhoClamped));
-    const detailFalloff = 1 - rhoClamped * rhoClamped;
-
-    // Bilinear sample of the normalized pixel luminance.
-    const u = (x / (2 * radius)) + 0.5;
-    const v = (z / (2 * radius)) + 0.5;
-    let pixel = 0.5;
-    if (u >= 0 && u <= 1 && v >= 0 && v <= 1) {
-        const s = hm.size;
-        const fx = u * (s - 1);
-        const fy = v * (s - 1);
-        const x0 = Math.floor(fx);
-        const y0 = Math.floor(fy);
-        const x1 = Math.min(x0 + 1, s - 1);
-        const y1 = Math.min(y0 + 1, s - 1);
-        const tx = fx - x0;
-        const ty = fy - y0;
-        const h00 = hm.data[y0 * s + x0];
-        const h10 = hm.data[y0 * s + x1];
-        const h01 = hm.data[y1 * s + x0];
-        const h11 = hm.data[y1 * s + x1];
-        const h0 = h00 * (1 - tx) + h10 * tx;
-        const h1 = h01 * (1 - tx) + h11 * tx;
-        pixel = h0 * (1 - ty) + h1 * ty;
-    }
-
-    // Signed detail in [-1, +1] with a gamma curve for punchier peaks/valleys.
-    const centered = (pixel - 0.5) * 2;
-    const mag = Math.pow(Math.abs(centered), hm.detailGamma);
-    const detail = Math.sign(centered) * mag;
-
-    const dome = hm.domeHeight * domeFalloff;
-    return dome + detail * hm.scaleY * detailFalloff;
-}
-
-/**
- * Central-difference gradient of the heightmap at (x, z). Returned normal is in world units and
- * already normalized. Used to tilt the rover to match the terrain slope.
- */
-function sampleHeightmapNormal(
-    hm: TerrainHeightmap,
-    x: number,
-    z: number,
-    radius: number,
-): { nx: number; ny: number; nz: number } {
-    const eps = Math.max(radius * 0.02, 0.02);
-    const hxp = sampleHeightmap(hm, x + eps, z, radius);
-    const hxm = sampleHeightmap(hm, x - eps, z, radius);
-    const hzp = sampleHeightmap(hm, x, z + eps, radius);
-    const hzm = sampleHeightmap(hm, x, z - eps, radius);
-    const dhdx = (hxp - hxm) / (2 * eps);
-    const dhdz = (hzp - hzm) / (2 * eps);
-    // Normal of surface y = h(x, z) is (-dh/dx, 1, -dh/dz), then normalize.
-    const nx = -dhdx;
-    const ny = 1;
-    const nz = -dhdz;
-    const len = Math.hypot(nx, ny, nz) || 1;
-    return { nx: nx / len, ny: ny / len, nz: nz / len };
-}
-
-/**
- * Rover step on a heightmap-terrain disk: clamp XZ to the disk, then look up Y from the
- * heightmap. The returned position is snapped to the real surface so the rover bobs over
- * bumps and dips into valleys as it drives.
- */
-function stepOnHeightmap(
-    current: { x: number; y: number; z: number },
-    moveX: number,
-    moveZ: number,
-    radius: number,
-    diskY: number,
-    centerX: number,
-    centerZ: number,
-    hm: TerrainHeightmap | null,
-): { x: number; y: number; z: number } {
-    const newX = current.x + moveX;
-    const newZ = current.z + moveZ;
-    const dx = newX - centerX;
-    const dz = newZ - centerZ;
-    const r = Math.hypot(dx, dz);
-    let px: number;
-    let pz: number;
-    if (r <= radius || r < 1e-6) {
-        px = newX;
-        pz = newZ;
-    } else {
-        const s = radius / r;
-        px = centerX + dx * s;
-        pz = centerZ + dz * s;
-    }
-    const py = diskY + (hm ? sampleHeightmap(hm, px - centerX, pz - centerZ, radius) : 0);
-    return { x: px, y: py, z: pz };
-}
-
-/**
- * AR flat-disk movement: map joystick (screen-style +X right, +Y up) onto the play disk in
- * `ar-play-root` local XZ. Uses the live camera orientation so "push up" moves toward the top
- * of the device view on the table — unlike `getCameraFrame` + `.xz`, which used a spherical
- * tangent at the rover and often inverted or crushed vertical input.
- */
-function computeArFlatDiskMoveXZ(
-    THREE: any,
-    inputX: number,
-    inputY: number,
-    speed: number,
-): { mx: number; mz: number } {
-    const sceneEl = document.querySelector('a-scene') as any;
-    const camObj = sceneEl?.camera?.el?.object3D;
-    const playRoot = document.getElementById('ar-play-root') as any;
-    if (!camObj || !playRoot?.object3D) {
-        return { mx: inputX * speed, mz: inputY * speed };
-    }
-
-    playRoot.object3D.updateWorldMatrix(true, false);
-    camObj.updateWorldMatrix(true, false);
-
-    const playQuat = new THREE.Quaternion();
-    playRoot.object3D.getWorldQuaternion(playQuat);
-    const groundUp = new THREE.Vector3(0, 1, 0).applyQuaternion(playQuat).normalize();
-
-    const camQuat = new THREE.Quaternion();
-    camObj.getWorldQuaternion(camQuat);
-    const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camQuat);
-    const camScrUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camQuat);
-
-    const proj = (v: any) => {
-        const o = v.clone();
-        o.addScaledVector(groundUp, -o.dot(groundUp));
-        return o;
-    };
-
-    let r = proj(camRight);
-    let u = proj(camScrUp);
-
-    if (r.lengthSq() < 1e-10) {
-        r = new THREE.Vector3(1, 0, 0);
-        r.addScaledVector(groundUp, -r.dot(groundUp));
-        if (r.lengthSq() < 1e-10) r.set(0, 0, 1);
-        r.normalize();
-    } else {
-        r.normalize();
-    }
-    if (u.lengthSq() < 1e-10) {
-        u = new THREE.Vector3().crossVectors(groundUp, r).normalize();
-    } else {
-        u.normalize();
-        u.addScaledVector(r, -u.dot(r));
-        if (u.lengthSq() < 1e-10) u = new THREE.Vector3().crossVectors(groundUp, r).normalize();
-        else u.normalize();
-    }
-
-    const moveWorld = r.clone().multiplyScalar(inputX).addScaledVector(u, inputY).multiplyScalar(speed);
-    const invPlayQuat = playQuat.clone().invert();
-    moveWorld.applyQuaternion(invPlayQuat);
-    return { mx: moveWorld.x, mz: moveWorld.z };
-}
-
-/**
- * OpenCV pipeline: take a video element + a circular crop in pixel space and return a
- * luminance-based heightmap. Bright pixels → peaks, dark pixels → valleys. We use CLAHE to
- * boost contrast of the natural lighting on the print (bumps get highlights, dents cast
- * shadows), then Gaussian-blur to smooth noise before downsampling to the grid resolution.
- *
- * Also returns a data URL of the cropped region — perfect for texturing the displaced mesh so
- * the virtual terrain matches what the camera saw.
- */
-function buildHeightmapFromFrame(
-    cv: any,
-    video: HTMLVideoElement,
-    centerPx: { x: number; y: number },
-    radiusPx: number,
-    outSize: number = 96,
-): TerrainHeightmap | null {
-    if (!cv) return null;
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    if (!vw || !vh || radiusPx <= 2) return null;
-
-    // Clamp the crop square to the visible frame.
-    const cropSize = Math.max(32, Math.min(Math.round(radiusPx * 2), Math.min(vw, vh)));
-    const cx = Math.min(Math.max(centerPx.x, cropSize / 2), vw - cropSize / 2);
-    const cy = Math.min(Math.max(centerPx.y, cropSize / 2), vh - cropSize / 2);
-    const cropX = Math.round(cx - cropSize / 2);
-    const cropY = Math.round(cy - cropSize / 2);
-
-    // Render the video into a canvas to read pixel data.
-    const canvas = document.createElement('canvas');
-    canvas.width = vw;
-    canvas.height = vh;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    ctx.drawImage(video, 0, 0, vw, vh);
-
-    // Build the texture data URL from a circular-cropped canvas (transparent outside the circle).
-    const texCanvas = document.createElement('canvas');
-    texCanvas.width = cropSize;
-    texCanvas.height = cropSize;
-    const texCtx = texCanvas.getContext('2d');
-    if (!texCtx) return null;
-    texCtx.save();
-    texCtx.beginPath();
-    texCtx.arc(cropSize / 2, cropSize / 2, cropSize / 2 - 1, 0, Math.PI * 2);
-    texCtx.closePath();
-    texCtx.clip();
-    texCtx.drawImage(canvas, cropX, cropY, cropSize, cropSize, 0, 0, cropSize, cropSize);
-    texCtx.restore();
-    const textureUrl = texCanvas.toDataURL('image/png');
-
-    // OpenCV processing pipeline on the cropped region.
-    const fullImg = cv.imread(canvas);
-    let heightmap: Float32Array | null = null;
-    try {
-        const roi = fullImg.roi(new cv.Rect(cropX, cropY, cropSize, cropSize));
-        const gray = new cv.Mat();
-        cv.cvtColor(roi, gray, cv.COLOR_RGBA2GRAY);
-
-        // Contrast-limited adaptive histogram equalization: pulls out subtle shading on the gray print.
-        const clahe = new cv.CLAHE(2.5, new cv.Size(8, 8));
-        const enhanced = new cv.Mat();
-        clahe.apply(gray, enhanced);
-
-        // Mild Gaussian blur to tame noise from camera sensor + print texture before resizing.
-        const blurred = new cv.Mat();
-        cv.GaussianBlur(enhanced, blurred, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
-
-        // Resize to the target grid.
-        const resized = new cv.Mat();
-        cv.resize(blurred, resized, new cv.Size(outSize, outSize), 0, 0, cv.INTER_AREA);
-
-        // Normalize to [0, 1] using per-sample mean/std — keeps the central "disk plane" at 0.5
-        // even when the print is uniformly bright or dark.
-        const src = resized.data as Uint8Array; // Mat is 8U single channel at this point.
-        heightmap = new Float32Array(outSize * outSize);
-        // Only take pixels inside the circle mask when computing stats to avoid the black corners
-        // of the crop biasing the normalization.
-        let sum = 0;
-        let sum2 = 0;
-        let count = 0;
-        const r2 = (outSize / 2 - 0.5) ** 2;
-        for (let y = 0; y < outSize; y++) {
-            for (let x = 0; x < outSize; x++) {
-                const dx = x - outSize / 2;
-                const dy = y - outSize / 2;
-                if (dx * dx + dy * dy > r2) continue;
-                const v = src[y * outSize + x] / 255;
-                sum += v;
-                sum2 += v * v;
-                count++;
-            }
-        }
-        const mean = count > 0 ? sum / count : 0.5;
-        const variance = count > 0 ? Math.max(1e-6, sum2 / count - mean * mean) : 1;
-        const std = Math.sqrt(variance);
-        for (let y = 0; y < outSize; y++) {
-            for (let x = 0; x < outSize; x++) {
-                const v = src[y * outSize + x] / 255;
-                // Z-score then squash to [0,1] — ±2 std covers almost all pixels.
-                const z = (v - mean) / std;
-                heightmap[y * outSize + x] = Math.max(0, Math.min(1, 0.5 + z * 0.25));
-            }
-        }
-
-        roi.delete();
-        gray.delete();
-        enhanced.delete();
-        blurred.delete();
-        resized.delete();
-        clahe.delete();
-    } catch (err) {
-        console.warn('[AR][heightmap] pipeline error:', err);
-    } finally {
-        fullImg.delete();
-    }
-
-    if (!heightmap) return null;
-
-    return {
-        data: heightmap,
-        size: outSize,
-        // Detail amplitude in scaled-local units. Pumped up 2.4× from the original 0.25 so
-        // dents + ridges feel carved into the terrain, not just softly shaded.
-        scaleY: 0.75,
-        // Taller cap + √(1−ρ²) profile in sampleHeightmap → stronger “wrapper” over the print.
-        domeHeight: 1.65,
-        // Gamma > 1 exaggerates strong highlights / shadows so bumps feel bumpier.
-        detailGamma: 1.65,
-        textureUrl,
-        sourceFrameW: vw,
-        sourceFrameH: vh,
-        centerPx: { x: cx, y: cy },
-        radiusPx: cropSize / 2,
-    };
-}
-
-/**
- * Output of the OpenCV.js gray-surface detector. All pixel values are in the source frame
- * (the AR.js video element's native resolution). `areaFraction` is the largest gray contour's
- * area divided by total frame pixels — a cheap confidence score.
- */
-export type GrayDetection = {
-    centerX: number;
-    centerY: number;
-    radiusPx: number;
-    frameW: number;
-    frameH: number;
-    areaFraction: number;
-    timestamp: number;
-};
-
-/**
- * Run one pass of the gray-silhouette detector on an ImageData buffer.
- * Strategy: downscale → HSV → mask (low saturation + mid value) → morphology → largest contour
- * → minimum enclosing circle. Tunables are kept broad so lighting changes don't kill detection.
- * Returns null if no gray region meets the minimum area threshold.
- */
-function detectGrayBlob(cv: any, imageData: ImageData, minAreaFraction = 0.01): GrayDetection | null {
-    const src = cv.matFromImageData(imageData);
-    const hsv = new cv.Mat();
-    const mask = new cv.Mat();
-    const lower = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 40, 0]);
-    const upper = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 60, 210, 255]);
-    const contours = new cv.MatVector();
-    const hierarchy = new cv.Mat();
-    try {
-        cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
-        cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
-        // Gray = low saturation, medium-high value; excludes very dark (shadows) and pure white (highlights/specular).
-        const low = new cv.Mat(1, 1, cv.CV_8UC3);
-        const high = new cv.Mat(1, 1, cv.CV_8UC3);
-        low.data.set([0, 0, 40]);
-        high.data.set([180, 60, 210]);
-        cv.inRange(hsv, low, high, mask);
-        low.delete(); high.delete();
-
-        // Close small holes + drop speckle noise.
-        const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
-        cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, kernel);
-        cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
-        kernel.delete();
-
-        cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        let bestIdx = -1;
-        let bestArea = 0;
-        for (let i = 0; i < contours.size(); i++) {
-            const c = contours.get(i);
-            const a = cv.contourArea(c);
-            if (a > bestArea) { bestArea = a; bestIdx = i; }
-            c.delete();
-        }
-
-        const totalPx = mask.rows * mask.cols;
-        const areaFraction = bestArea / totalPx;
-        if (bestIdx < 0 || areaFraction < minAreaFraction) return null;
-
-        const best = contours.get(bestIdx);
-        const { center, radius } = cv.minEnclosingCircle(best);
-        best.delete();
-        return {
-            centerX: center.x,
-            centerY: center.y,
-            radiusPx: radius,
-            frameW: mask.cols,
-            frameH: mask.rows,
-            areaFraction,
-            timestamp: Date.now(),
-        };
-    } finally {
-        src.delete();
-        hsv.delete();
-        mask.delete();
-        lower.delete();
-        upper.delete();
-        contours.delete();
-        hierarchy.delete();
-    }
 }
 
 function translationFromPose(elements: number[]): MarkerOffset {
@@ -754,185 +251,6 @@ function setsEqual(a: Set<number>, b: Set<number>): boolean {
         if (!b.has(v)) return false;
     }
     return true;
-}
-
-/**
- * Calibration-panel row that surfaces the OpenCV.js gray-detection result and, on demand,
- * auto-fits the flat disk radius to it. Mapping pixel → marker units uses a field-of-view
- * heuristic: at a typical phone FoV (~60° horizontal) and the common viewing distance of a
- * marker (~0.4 m), 1 marker unit (0.0508 m ≈ 2") occupies roughly 1/8 of the frame width.
- * The user can always fine-tune with the slider; the button just gets them in the ballpark.
- */
-const GrayDiskAutoFitRow: React.FC<{
-    cvReady: boolean;
-    lastDetection: GrayDetection | null;
-    onApply: (radiusInMarkerUnits: number) => void;
-}> = ({ cvReady, lastDetection, onApply }) => {
-    const fresh = lastDetection && Date.now() - lastDetection.timestamp < 2000;
-    const widthFraction = fresh && lastDetection
-        ? (2 * lastDetection.radiusPx) / lastDetection.frameW
-        : 0;
-
-    return (
-        <div style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 4,
-            marginTop: 4,
-            padding: 6,
-            borderRadius: 6,
-            background: 'rgba(0, 0, 0, 0.28)',
-            border: '1px dashed rgba(123,255,178,0.35)',
-        }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10 }}>
-                <span style={{ opacity: 0.85 }}>OpenCV gray detection</span>
-                <span style={{ color: cvReady ? '#7bffb2' : '#f6a25e', fontWeight: 700 }}>
-                    {cvReady ? (fresh ? 'LIVE' : 'idle') : 'loading…'}
-                </span>
-            </div>
-            <div style={{ fontSize: 10, opacity: 0.75 }}>
-                {fresh && lastDetection ? (
-                    <>
-                        Ø {(2 * lastDetection.radiusPx).toFixed(0)}px ({(widthFraction * 100).toFixed(0)}% of frame), area {(lastDetection.areaFraction * 100).toFixed(1)}%
-                    </>
-                ) : (
-                    'Point camera at gray asteroid face to detect…'
-                )}
-            </div>
-            <button
-                type="button"
-                disabled={!fresh}
-                onClick={() => {
-                    if (!fresh || !lastDetection) return;
-                    // Heuristic mapping: the detected width fills (widthFraction) of the frame.
-                    // A 2" marker at typical viewing distance fills ~1/8 of the frame → so
-                    // detected_diameter_in_marker_units ≈ widthFraction * 8, radius = half of that.
-                    const diameterMarkerUnits = widthFraction * 8;
-                    const radiusMarkerUnits = Math.max(1, Math.min(20, diameterMarkerUnits / 2));
-                    onApply(radiusMarkerUnits);
-                }}
-                style={{
-                    width: '100%',
-                    padding: '6px 8px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(123,255,178,0.35)',
-                    background: fresh ? 'rgba(24, 52, 40, 0.9)' : 'rgba(40, 40, 40, 0.5)',
-                    color: fresh ? '#7bffb2' : '#888',
-                    fontSize: 10,
-                    fontWeight: 700,
-                    cursor: fresh ? 'pointer' : 'not-allowed',
-                }}
-            >
-                Auto-fit disk to detected gray
-            </button>
-        </div>
-    );
-};
-
-/*
- * Register a custom A-Frame component that renders a displaced CircleGeometry driven by a
- * heightmap + textured with the snapshot. Run once per page load. It reads state via setter
- * methods rather than A-Frame's schema because Float32Array doesn't serialize to an HTML
- * attribute — we stash a token into the attribute and pull the payload from a module-local map.
- */
-const _terrainPayloadRegistry = new Map<string, { hm: TerrainHeightmap; radius: number }>();
-let _terrainRegistered = false;
-function registerHeightmapTerrainComponent() {
-    if (_terrainRegistered) return;
-    const AFRAME = (window as any).AFRAME;
-    const THREE = (window as any).THREE;
-    if (!AFRAME || !THREE) return;
-    if (AFRAME.components && AFRAME.components['heightmap-terrain']) {
-        _terrainRegistered = true;
-        return;
-    }
-    AFRAME.registerComponent('heightmap-terrain', {
-        schema: {
-            token: { type: 'string', default: '' },
-            segments: { type: 'number', default: 64 },
-            opacity: { type: 'number', default: 0.95 },
-        },
-        update: function () {
-            const data = this.data;
-            const payload = _terrainPayloadRegistry.get(data.token);
-            if (!payload) return;
-            const { hm, radius } = payload;
-            const segs = Math.max(16, data.segments | 0);
-
-            // Square plane — we carve out the circular play zone by collapsing vertices beyond
-            // the radius down to the disk plane and pushing them under the ground via alpha.
-            const geom = new THREE.PlaneGeometry(radius * 2, radius * 2, segs, segs);
-            geom.rotateX(-Math.PI / 2);
-
-            const pos = geom.attributes.position;
-            for (let i = 0; i < pos.count; i++) {
-                const px = pos.getX(i);
-                const pz = pos.getZ(i);
-                const r2 = px * px + pz * pz;
-                let y = 0;
-                if (r2 <= radius * radius) {
-                    y = sampleHeightmap(hm, px, pz, radius);
-                }
-                pos.setY(i, y);
-            }
-            geom.computeVertexNormals();
-
-            // Build circular alpha-mask texture so the square plane appears as a disk.
-            const maskSize = 256;
-            const maskCanvas = document.createElement('canvas');
-            maskCanvas.width = maskSize;
-            maskCanvas.height = maskSize;
-            const mctx = maskCanvas.getContext('2d');
-            if (mctx) {
-                const grad = mctx.createRadialGradient(
-                    maskSize / 2, maskSize / 2, maskSize * 0.44,
-                    maskSize / 2, maskSize / 2, maskSize / 2,
-                );
-                grad.addColorStop(0, 'rgba(255,255,255,1)');
-                grad.addColorStop(1, 'rgba(255,255,255,0)');
-                mctx.fillStyle = grad;
-                mctx.fillRect(0, 0, maskSize, maskSize);
-            }
-            const alphaTex = new THREE.CanvasTexture(maskCanvas);
-            alphaTex.needsUpdate = true;
-
-            const colorTex = new THREE.TextureLoader().load(hm.textureUrl);
-            colorTex.colorSpace = (THREE as any).SRGBColorSpace ?? (THREE as any).sRGBEncoding;
-            colorTex.needsUpdate = true;
-
-            const material = new THREE.MeshStandardMaterial({
-                map: colorTex,
-                alphaMap: alphaTex,
-                transparent: true,
-                opacity: data.opacity,
-                roughness: 0.85,
-                metalness: 0.0,
-                side: THREE.DoubleSide,
-            });
-
-            // Clean up any prior mesh.
-            const prev = this.el.getObject3D('mesh');
-            if (prev && prev.geometry) prev.geometry.dispose();
-            if (prev && prev.material) {
-                if (Array.isArray(prev.material)) prev.material.forEach((m: any) => m.dispose());
-                else prev.material.dispose();
-            }
-
-            const mesh = new THREE.Mesh(geom, material);
-            mesh.frustumCulled = false;
-            this.el.setObject3D('mesh', mesh);
-        },
-        remove: function () {
-            const prev = this.el.getObject3D('mesh');
-            if (prev && prev.geometry) prev.geometry.dispose();
-            if (prev && prev.material) {
-                if (Array.isArray(prev.material)) prev.material.forEach((m: any) => m.dispose());
-                else prev.material.dispose();
-            }
-            this.el.removeObject3D('mesh');
-        },
-    });
-    _terrainRegistered = true;
 }
 
 const App = () => {
@@ -1004,35 +322,7 @@ const App = () => {
 
     // Parent entity transform that places the asteroid near the table marker.
     const [arCalibration, setArCalibration] = useState<ArCalibration>(() => loadArCalibration());
-    // OpenCV.js gray-surface detection — validates that the virtual disk actually covers the
-    // gray silhouette of the 3D-printed asteroid. See useEffect below for the detection loop.
-    const [cvReady, setCvReady] = useState(false);
-    const [grayDetection, setGrayDetection] = useState<GrayDetection | null>(null);
-
-    /*
-     * Tap-to-map setup flow. Each AR mission starts in AWAIT_CENTER; one tap on the gray face
-     * records the disk center (in scaled-local units), a second tap on the edge records the
-     * radius, and we transition to READY → the game spawns + begins. This skips the slider
-     * calibration entirely for first-time users.
-     */
-    type ArSetupPhase = 'AWAIT_CENTER' | 'AWAIT_EDGE' | 'READY';
-    const [arSetupPhase, setArSetupPhase] = useState<ArSetupPhase>('AWAIT_CENTER');
-    const arSetupPhaseRef = useRef(arSetupPhase);
-    useEffect(() => { arSetupPhaseRef.current = arSetupPhase; }, [arSetupPhase]);
-
-    /*
-     * Terrain snapshot: at the moment the player finishes tap-to-map, we grab the current video
-     * frame, crop the circular play zone, and run it through the OpenCV pipeline to get a
-     * heightmap. The heightmap drives rover Y + tilt + sample/obstacle placement. The cropped
-     * snapshot becomes the texture on a displaced mesh so the user can see their captured terrain.
-     *
-     * `terrainToken` is how we bind the React-side payload to the A-Frame custom component
-     * (see registerHeightmapTerrainComponent). When the token changes, the component rebuilds.
-     */
-    const [terrainToken, setTerrainToken] = useState<string | null>(null);
-    const terrainRef = useRef<TerrainHeightmap | null>(null);
-    // Screen-space pixel coordinates of each tap — needed to crop the correct circle out of the video frame.
-    const tapScreenCenterRef = useRef<{ x: number; y: number } | null>(null);
+    const [showArCalibrationPanel, setShowArCalibrationPanel] = useState(false);
     // Persist any slider change so the next session starts with the tuned values.
     useEffect(() => {
         try {
@@ -1056,57 +346,15 @@ const App = () => {
         sampleScaleFr,
         compensateScaleWithLift,
         liftDistancePivot,
-        hideVirtualAsteroid,
-        showCalibrationCube,
-        flatSurfaceMode,
-        flatSurfaceRadius,
-        flatSurfaceHeight,
-        flatSurfaceOffsetX,
-        flatSurfaceOffsetZ,
-        showFlatDisk,
-        hideTerrainSurface,
     } = arCalibration;
-
+    const showArAsteroid = true;
     /**
-     * Flat AR only: after tap-to-map reaches READY, reveal in order — HUD (score/energy/joystick),
-     * then field (disk/terrain/samples/obstacles), then rover. During MAP YOUR ZONE, HUD stays off.
+     * Toggles the red calibration reference cube drawn on every detected marker.
+     * Purely a visual check — has no physics, no parent-scale transforms, and is a
+     * direct child of <a-marker>. Use it to confirm (a) AR.js is loading, (b) markers
+     * are being tracked, and (c) your calibration math lines the cube up with the real marker.
      */
-    type ArFlatRevealPhase = 'SETUP' | 'HUD' | 'FIELD' | 'ROVER';
-    const [arFlatRevealPhase, setArFlatRevealPhase] = useState<ArFlatRevealPhase>('SETUP');
-    const arFlatRevealPhaseRef = useRef(arFlatRevealPhase);
-    useEffect(() => { arFlatRevealPhaseRef.current = arFlatRevealPhase; }, [arFlatRevealPhase]);
-
-    useLayoutEffect(() => {
-        if (gameState !== 'AR_MODE' || !flatSurfaceMode) {
-            setArFlatRevealPhase('ROVER');
-            return;
-        }
-        if (arSetupPhase !== 'READY') {
-            setArFlatRevealPhase('SETUP');
-            return;
-        }
-        setArFlatRevealPhase('HUD');
-    }, [gameState, flatSurfaceMode, arSetupPhase]);
-
-    useEffect(() => {
-        if (gameState !== 'AR_MODE' || !flatSurfaceMode || arSetupPhase !== 'READY') return;
-        const t1 = window.setTimeout(() => setArFlatRevealPhase('FIELD'), 550);
-        const t2 = window.setTimeout(() => setArFlatRevealPhase('ROVER'), 1200);
-        return () => {
-            window.clearTimeout(t1);
-            window.clearTimeout(t2);
-        };
-    }, [gameState, flatSurfaceMode, arSetupPhase]);
-
-    /**
-     * "Digital-twin" AR pattern: the asteroid collision GLB is kept as the invisible physics surface
-     * (rover/crystals/obstacles raycast against it) but the visual is hidden so the user sees the
-     * real 3D-printed rock through the camera. Browser-based real-surface detection (WebXR Depth
-     * Sensing / 8th Wall mesh / Niantic Lightship) would let us drop the twin entirely, but it
-     * requires leaving the AR.js marker stack — flip `hideVirtualAsteroid` off any time to verify
-     * alignment between twin and physical rock during calibration.
-     */
-    const showArAsteroid = !hideVirtualAsteroid;
+    const showCalibrationCube = true;
     /**
      * Toggles a bright green debug sphere co-located with the AR rover. Great for verifying
      * whether the rover's computed position is actually on the asteroid surface when the
@@ -1116,228 +364,6 @@ const App = () => {
 
     /** Persisted across anchor switches so the rover stays on the asteroid even when the AR parent remounts. */
     const roverPosRef = useRef<{ x: number; y: number; z: number } | null>(null);
-
-    // Refs for flat-surface tunables so the movement loop always sees the latest tap values.
-    const flatSurfaceModeRef = useRef(flatSurfaceMode);
-    const flatSurfaceRadiusRef = useRef(flatSurfaceRadius);
-    const flatSurfaceHeightRef = useRef(flatSurfaceHeight);
-    const flatSurfaceOffsetXRef = useRef(flatSurfaceOffsetX);
-    const flatSurfaceOffsetZRef = useRef(flatSurfaceOffsetZ);
-    useEffect(() => { flatSurfaceModeRef.current = flatSurfaceMode; }, [flatSurfaceMode]);
-    useEffect(() => { flatSurfaceRadiusRef.current = flatSurfaceRadius; }, [flatSurfaceRadius]);
-    useEffect(() => { flatSurfaceHeightRef.current = flatSurfaceHeight; }, [flatSurfaceHeight]);
-    useEffect(() => { flatSurfaceOffsetXRef.current = flatSurfaceOffsetX; }, [flatSurfaceOffsetX]);
-    useEffect(() => { flatSurfaceOffsetZRef.current = flatSurfaceOffsetZ; }, [flatSurfaceOffsetZ]);
-
-    /*
-     * OpenCV.js readiness — the script is loaded async from /vendor/opencv.js in index.html.
-     * `cv.onRuntimeInitialized` fires once the WASM module is usable; until then, every cv.*
-     * call would throw. We poll for it so we don't race the script tag.
-     */
-    useEffect(() => {
-        let cancelled = false;
-        const check = () => {
-            if (cancelled) return;
-            const cv = (window as any).cv;
-            if (cv && typeof cv.Mat === 'function') {
-                setCvReady(true);
-                return;
-            }
-            if (cv && typeof cv.onRuntimeInitialized !== 'undefined') {
-                cv.onRuntimeInitialized = () => {
-                    if (!cancelled) setCvReady(true);
-                };
-                return;
-            }
-            window.setTimeout(check, 200);
-        };
-        check();
-        return () => { cancelled = true; };
-    }, []);
-
-    /*
-     * Register the A-Frame heightmap-terrain component once both AFRAME and THREE are on window.
-     * A-Frame bundles THREE but loads asynchronously, so we poll briefly.
-     */
-    useEffect(() => {
-        let cancelled = false;
-        const tryRegister = () => {
-            if (cancelled) return;
-            if ((window as any).AFRAME && (window as any).THREE) {
-                registerHeightmapTerrainComponent();
-                return;
-            }
-            window.setTimeout(tryRegister, 150);
-        };
-        tryRegister();
-        return () => { cancelled = true; };
-    }, []);
-
-    /*
-     * Gray-surface detection loop. Runs at ~4 fps while in AR mode to keep the CPU cost low
-     * (OpenCV.js is WASM but still not free). Copies the AR video element into a downscaled
-     * canvas (320×240), runs detectGrayBlob, and stores the result. The calibration panel
-     * reads grayDetection to show diameter + confidence to the user.
-     */
-    useEffect(() => {
-        if (!cvReady) return;
-        if (gameState !== 'AR_MODE') return;
-        const cv = (window as any).cv;
-        if (!cv) return;
-
-        let cancelled = false;
-        const canvas = document.createElement('canvas');
-        const SCAN_W = 320;
-        const SCAN_H = 240;
-        canvas.width = SCAN_W;
-        canvas.height = SCAN_H;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        if (!ctx) return;
-
-        const tick = () => {
-            if (cancelled) return;
-            const video = document.querySelector('video');
-            if (video && video.readyState >= 2 && video.videoWidth > 0) {
-                try {
-                    ctx.drawImage(video, 0, 0, SCAN_W, SCAN_H);
-                    const img = ctx.getImageData(0, 0, SCAN_W, SCAN_H);
-                    const result = detectGrayBlob(cv, img);
-                    if (!cancelled) setGrayDetection(result);
-                } catch (err) {
-                    // Transient decode errors can happen during marker pose jitter; swallow them.
-                    console.warn('[AR][cv] gray detection error:', err);
-                }
-            }
-            if (!cancelled) window.setTimeout(tick, 250);
-        };
-        tick();
-        return () => { cancelled = true; };
-    }, [cvReady, gameState]);
-
-    /*
-     * Tap-to-map play-area selector.
-     *
-     * Listens for pointer events on the AR canvas during the setup phases. Each tap is converted
-     * from screen NDC → world ray (via the AR.js camera) → intersection with the active marker's
-     * local XZ plane → marker-local coordinates → scaled-local coordinates (divided by modelScale
-     * so everything else in this file that positions things in the scale transform still works).
-     *
-     * Phase 1 (AWAIT_CENTER): tap sets (flatSurfaceOffsetX, flatSurfaceOffsetZ).
-     * Phase 2 (AWAIT_EDGE):   tap sets flatSurfaceRadius (distance from center to this tap).
-     * Phase 3 (READY):        tap handler disarms; sample + obstacle spawn + rover init fire
-     *                          because their gating effects see phase === READY.
-     *
-     */
-    useEffect(() => {
-        if (gameState !== 'AR_MODE') return;
-        if (!flatSurfaceMode) return;
-        if (arSetupPhase === 'READY') return;
-        if (arAnchorId === null) return;
-
-        const sceneEl = document.querySelector('a-scene') as any;
-        const canvas: HTMLCanvasElement | null = sceneEl?.canvas ?? null;
-        if (!canvas) return;
-
-        const raycastToPlayPlane = (clientX: number, clientY: number): { x: number; z: number } | null => {
-            const THREE = (window as any).THREE;
-            if (!THREE || !sceneEl?.camera) return null;
-
-            // Play-root carries the scale transform; its local XZ plane is the flat disk surface.
-            // worldToLocal inverts the full chain (marker → centerOffset → scale) for us, so taps
-            // come out directly in the same coordinate space the JSX + physics already use.
-            const playRoot = document.getElementById('ar-play-root') as any;
-            if (!playRoot?.object3D) return null;
-
-            const rect = canvas.getBoundingClientRect();
-            const ndc = new THREE.Vector2(
-                ((clientX - rect.left) / rect.width) * 2 - 1,
-                -((clientY - rect.top) / rect.height) * 2 + 1,
-            );
-            const raycaster = new THREE.Raycaster();
-            raycaster.setFromCamera(ndc, sceneEl.camera);
-
-            playRoot.object3D.updateWorldMatrix(true, false);
-            const worldPos = new THREE.Vector3();
-            const worldQuat = new THREE.Quaternion();
-            playRoot.object3D.getWorldPosition(worldPos);
-            playRoot.object3D.getWorldQuaternion(worldQuat);
-            const worldUp = new THREE.Vector3(0, 1, 0).applyQuaternion(worldQuat).normalize();
-            const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(worldUp, worldPos);
-
-            const hitWorld = new THREE.Vector3();
-            if (!raycaster.ray.intersectPlane(plane, hitWorld)) return null;
-
-            const hitLocal = playRoot.object3D.worldToLocal(hitWorld.clone());
-            return { x: hitLocal.x, z: hitLocal.z };
-        };
-
-        const onPointerDown = (e: PointerEvent) => {
-            // Ignore taps on HTML UI overlays; they already have pointer-events: auto and stop props on their own buttons.
-            if ((e.target as HTMLElement)?.closest('.ar-setup-overlay')) return;
-            const hit = raycastToPlayPlane(e.clientX, e.clientY);
-            if (!hit) return;
-
-            if (arSetupPhase === 'AWAIT_CENTER') {
-                // Save screen-space pixels too — we need them to crop the circular region out of
-                // the video frame when generating the terrain heightmap on the next tap.
-                tapScreenCenterRef.current = { x: e.clientX, y: e.clientY };
-                updateArCalibration({ flatSurfaceOffsetX: hit.x, flatSurfaceOffsetZ: hit.z });
-                setArSetupPhase('AWAIT_EDGE');
-                console.log(`[AR][tap] center set → scaled-local (${hit.x.toFixed(3)}, ${hit.z.toFixed(3)})`);
-            } else if (arSetupPhase === 'AWAIT_EDGE') {
-                const dx = hit.x - flatSurfaceOffsetX;
-                const dz = hit.z - flatSurfaceOffsetZ;
-                const radius = Math.max(0.4, Math.hypot(dx, dz));
-                updateArCalibration({ flatSurfaceRadius: radius });
-
-                // Terrain capture: use the two tap positions to compute the screen-space circle,
-                // then process the current video frame into a heightmap. Done synchronously so
-                // the rover + samples spawn with the correct Y values immediately.
-                try {
-                    const cv = (window as any).cv;
-                    const video = document.querySelector('video') as HTMLVideoElement | null;
-                    const center = tapScreenCenterRef.current;
-                    if (cv && video && video.videoWidth > 0 && center) {
-                        const canvasRect = canvas.getBoundingClientRect();
-                        const scaleX = video.videoWidth / canvasRect.width;
-                        const scaleY = video.videoHeight / canvasRect.height;
-                        const cxVid = (center.x - canvasRect.left) * scaleX;
-                        const cyVid = (center.y - canvasRect.top) * scaleY;
-                        const exVid = (e.clientX - canvasRect.left) * scaleX;
-                        const eyVid = (e.clientY - canvasRect.top) * scaleY;
-                        const rVid = Math.max(16, Math.hypot(exVid - cxVid, eyVid - cyVid));
-                        const hm = buildHeightmapFromFrame(cv, video, { x: cxVid, y: cyVid }, rVid, 96);
-                        if (hm) {
-                            terrainRef.current = hm;
-                            const token = `terrain-${Date.now()}`;
-                            _terrainPayloadRegistry.set(token, { hm, radius });
-                            // Trim old tokens so the map doesn't grow unbounded across remaps.
-                            if (_terrainPayloadRegistry.size > 6) {
-                                const oldest = _terrainPayloadRegistry.keys().next().value;
-                                if (oldest) _terrainPayloadRegistry.delete(oldest);
-                            }
-                            setTerrainToken(token);
-                            console.log(`[AR][terrain] heightmap built (${hm.size}×${hm.size}, crop r=${rVid.toFixed(0)}px)`);
-                        } else {
-                            console.warn('[AR][terrain] heightmap build returned null');
-                        }
-                    } else {
-                        console.warn('[AR][terrain] skipping build — cv/video not ready');
-                    }
-                } catch (err) {
-                    console.warn('[AR][terrain] capture failed:', err);
-                }
-
-                setArSetupPhase('READY');
-                console.log(`[AR][tap] edge set → radius=${radius.toFixed(3)} (scaled-local)`);
-            }
-        };
-
-        canvas.addEventListener('pointerdown', onPointerDown);
-        return () => {
-            canvas.removeEventListener('pointerdown', onPointerDown);
-        };
-    }, [gameState, flatSurfaceMode, arSetupPhase, arAnchorId, modelScaleX, modelScaleY, modelScaleZ, flatSurfaceOffsetX, flatSurfaceOffsetZ, updateArCalibration]);
 
     // Calibration cube: 1 marker unit = printed marker width = 2" (MARKER_SIZE_METERS) on each edge.
     const MARKER_CUBE_REF_SIZE = 1.0;
@@ -1353,8 +379,7 @@ const App = () => {
     const markerOverlayShiftZ = 0.0;
 
     // Interior sizes expressed as fractions of the reference cube edge.
-    /** ×4 vs calibrated `sampleScaleFr` so crystals read clearly on the physical asteroid. */
-    const AR_SAMPLE_SCALE_FR = sampleScaleFr * 4;
+    const AR_SAMPLE_SCALE_FR = sampleScaleFr; // GLB sample scale in asteroid-local space (live-tuned)
     const AR_ARROW_CONE_HEIGHT_FR = 0.015;
     const AR_ARROW_CONE_RADIUS_FR = 0.008;
     const AR_ARROW_CYL_RADIUS_FR = 0.002;
@@ -1365,9 +390,7 @@ const App = () => {
     const AR_ARROW_NORMAL_OFFSET_FR = 0.04;
     const AR_COLLECTION_RADIUS_FR = 0.25;
     const AR_ROVER_SURFACE_OFFSET_FR = 0.06;
-    // 1.25 = the previous 5.0 value scaled down 4× per user request. Makes the rover feel
-    // appropriately tiny against the printed asteroid instead of filling the disk.
-    const AR_ROVER_DESIRED_SCALE_FR = 1.25;
+    const AR_ROVER_DESIRED_SCALE_FR = 5.0;
 
     const arSampleScale = markerOverlaySize * AR_SAMPLE_SCALE_FR;
     const arSampleScaleStr = `${arSampleScale} ${arSampleScale} ${arSampleScale}`;
@@ -1461,10 +484,6 @@ const App = () => {
             introLockoutTimerRef.current = window.setTimeout(() => setIntroPopupCanClose(true), 3500);
         } else if (mode === 'ar') {
             console.log("Starting AR MODE", chosenDifficulty);
-            // Fresh tap-to-map flow each mission — user picks a new play zone on the gray face.
-            setArSetupPhase('AWAIT_CENTER');
-            terrainRef.current = null;
-            setTerrainToken(null);
             setGameState('AR_MODE');
             // AR Experience launched from the Launch flow uses the same intro/briefing as web.
             if (chosenDifficulty !== undefined) {
@@ -1677,8 +696,6 @@ const App = () => {
         if (showEndScreen) return;
         if (showIntroPopup) return;
         if (modeCfgRef.current.energyEnabled && energyRef.current <= 0) return;
-        // Flat AR staged reveal: no driving until the rover is shown (HUD/field may already be visible).
-        if (gameState === 'AR_MODE' && flatSurfaceModeRef.current && arFlatRevealPhaseRef.current !== 'ROVER') return;
 
         const THREE = (window as any).THREE;
         const roverId = gameState === 'AR_MODE' ? 'ar-rover' : 'rover';
@@ -1698,19 +715,12 @@ const App = () => {
             : domPos;
         lastDirectionRef.current = [inputX, inputY];
 
-        /* Screen-space input → movement. Flat AR: project camera screen axes onto the play disk
-         * (see computeArFlatDiskMoveXZ). Web / spherical AR: tangent frame from rover radial. */
+        /* Convert screen-space input to world-space direction via camera frame. */
+        const { right, up } = getCameraFrame(currentPos.x, currentPos.y, currentPos.z);
         const webStepScale = 0.5;
-        let moveDir: any;
-        if (gameState === 'AR_MODE' && flatSurfaceModeRef.current) {
-            const { mx, mz } = computeArFlatDiskMoveXZ(THREE, inputX, inputY, AR_ROVER_SPEED_SCALE);
-            moveDir = new THREE.Vector3(mx, 0, mz);
-        } else {
-            const { right, up } = getCameraFrame(currentPos.x, currentPos.y, currentPos.z);
-            moveDir = gameState === 'AR_MODE'
-                ? up.clone().multiplyScalar(inputY).addScaledVector(right, inputX).multiplyScalar(AR_ROVER_SPEED_SCALE)
-                : up.clone().multiplyScalar(inputY * webStepScale).addScaledVector(right, inputX * webStepScale);
-        }
+        let moveDir = gameState === 'AR_MODE'
+            ? up.clone().multiplyScalar(inputY).addScaledVector(right, inputX).multiplyScalar(AR_ROVER_SPEED_SCALE)
+            : up.clone().multiplyScalar(inputY * webStepScale).addScaledVector(right, inputX * webStepScale);
         let obstacleDrainMultiplier = 1.0;
 
         if(difficulty == 'normal' || difficulty == 'hard') {
@@ -1736,58 +746,20 @@ const App = () => {
         
 
         try {
-            let px: number;
-            let py: number;
-            let pz: number;
+            const result = move_rover_on_asteroid(
+                moveDir.x, moveDir.y, moveDir.z,
+                currentPos.x, currentPos.y, currentPos.z
+            );
+            // In AR, lift the rover slightly off the surface so it visually sits on top of the asteroid mesh.
+            const [px, py, pz] = gameState === 'AR_MODE'
+                ? pushOutFromCenter(result.position[0], result.position[1], result.position[2], arSurfaceOffset)
+                : [result.position[0], result.position[1], result.position[2]];
 
-            /*
-             * Flat-surface mode (AR): the physical print only shows one face to the user, so we walk
-             * the rover on a horizontal disk anchored to the active marker instead of wrapping the
-             * full 3D mesh. No raycasting, no back-side of the asteroid, no depth ambiguity —
-             * purely a 2D step in (x, z). Disable `flatSurfaceMode` to fall back to the full-mesh
-             * WASM physics used by the web game.
-             */
-            if (gameState === 'AR_MODE' && flatSurfaceModeRef.current) {
-                // Heightmap-driven walk when a terrain was captured; flat fallback otherwise.
-                const hm = terrainRef.current;
-                if (hm) {
-                    const step = stepOnHeightmap(
-                        currentPos,
-                        moveDir.x,
-                        moveDir.z,
-                        flatSurfaceRadiusRef.current,
-                        flatSurfaceHeightRef.current,
-                        flatSurfaceOffsetXRef.current,
-                        flatSurfaceOffsetZRef.current,
-                        hm,
-                    );
-                    px = step.x; py = step.y; pz = step.z;
-                } else {
-                    const step = stepOnFlatDisk(
-                        currentPos,
-                        moveDir.x,
-                        moveDir.z,
-                        flatSurfaceRadiusRef.current,
-                        flatSurfaceHeightRef.current,
-                        flatSurfaceOffsetXRef.current,
-                        flatSurfaceOffsetZRef.current,
-                    );
-                    px = step.x; py = step.y; pz = step.z;
-                }
-            } else {
-                const result = move_rover_on_asteroid(
-                    moveDir.x, moveDir.y, moveDir.z,
-                    currentPos.x, currentPos.y, currentPos.z
-                );
-                if (gameState === 'AR_MODE') {
-                    const pushed = pushOutFromCenter(result.position[0], result.position[1], result.position[2], arSurfaceOffset);
-                    px = pushed[0]; py = pushed[1]; pz = pushed[2];
-                } else {
-                    px = result.position[0]; py = result.position[1]; pz = result.position[2];
-                }
-            }
-
-            rover.setAttribute('position', { x: px, y: py, z: pz });
+            rover.setAttribute('position', {
+                x: px,
+                y: py,
+                z: pz
+            });
             // Remember the last surface position so we can restore it if the AR anchor switches markers.
             if (gameState === 'AR_MODE') {
                 roverPosRef.current = { x: px, y: py, z: pz };
@@ -1798,27 +770,7 @@ const App = () => {
                 }
             }
 
-            if (gameState === 'AR_MODE' && flatSurfaceModeRef.current) {
-                // Terrain-aware rover tilt: if we have a captured heightmap, sample its gradient
-                // at the rover's position and align "up" with that surface normal. Otherwise fall
-                // back to a flat (+Y) normal.
-                const hmOrient = terrainRef.current;
-                if (hmOrient) {
-                    const normal = sampleHeightmapNormal(
-                        hmOrient,
-                        px - flatSurfaceOffsetXRef.current,
-                        pz - flatSurfaceOffsetZRef.current,
-                        flatSurfaceRadiusRef.current,
-                    );
-                    // updateRoverRotation takes a "from origin" vector; pass the normal directly so
-                    // its internal .normalize() preserves it.
-                    updateRoverRotation(rover, normal.nx, normal.ny, normal.nz, moveDir.x, 0, moveDir.z);
-                } else {
-                    updateRoverRotation(rover, 0, 1, 0, moveDir.x, 0, moveDir.z);
-                }
-            } else {
-                updateRoverRotation(rover, px, py, pz, moveDir.x, moveDir.y, moveDir.z);
-            }
+            updateRoverRotation(rover, px, py, pz, moveDir.x, moveDir.y, moveDir.z);
             // The follow camera only exists in the web scene; AR uses the real-world camera.
             if (gameState !== 'AR_MODE') {
                 updateCamera(px, py, pz);
@@ -1828,14 +780,7 @@ const App = () => {
             const arrowEl = document.getElementById('sample-arrow') as any;
             if (arrowEl) {
                 const currentSamples = samplesRef.current;
-                const arArrowHold =
-                    gameState === 'AR_MODE'
-                    && flatSurfaceModeRef.current
-                    && arFlatRevealPhaseRef.current !== 'FIELD'
-                    && arFlatRevealPhaseRef.current !== 'ROVER';
-                if (arArrowHold) {
-                    arrowEl.setAttribute('visible', 'false');
-                } else if (currentSamples.length === 0) {
+                if (currentSamples.length === 0) {
                     arrowEl.setAttribute('visible', 'false');
                 } else {
                     const rx2 = px, ry2 = py, rz2 = pz;
@@ -2092,52 +1037,21 @@ const App = () => {
             prevCamUp.current = null;
             // Force fresh surface spawn when entering a new mission.
             roverPosRef.current = null;
-            // AR + flat mode: wait for the user to map the play area via taps before spawning anything.
-            const waitingForTapSetup = gameState === 'AR_MODE' && flatSurfaceMode && arSetupPhase !== 'READY';
-            if (waitingForTapSetup) {
-                setSamples([]);
-                setObstacles([]);
-                return;
-            }
             if (meshLoaded && (gameState === 'WEB_GAME' || gameState === 'AR_MODE')) {
-                // Flat-surface AR spawn: place obstacles + samples on a 2D disk in the marker frame,
-                // so everything sits on the visible face of the printed asteroid instead of wrapping
-                // around an invisible back side. Web game still uses the full 3D mesh physics.
-                const flatAr = gameState === 'AR_MODE' && flatSurfaceMode;
-                const diskRadius = flatSurfaceRadius;
-                const diskHeight = flatSurfaceHeight;
-                const diskOffsetX = flatSurfaceOffsetX;
-                const diskOffsetZ = flatSurfaceOffsetZ;
-
                 // Obstacles — spawned first so sample placement can avoid them
-                const obsList: { id: string; x: number; y: number; z: number; radius: number }[] = [];
-                if (flatAr) {
-                    // A few obstacles scattered on the disk; keep them inside ~70% radius so the rim stays traversable.
-                    // When a terrain heightmap is captured, lift each obstacle to the local surface height
-                    // so it sits inside dents / on top of bumps instead of floating at the disk plane.
-                    const obsCount = Math.min(OBSTACLE_DIRECTIONS.length, 6);
-                    const obsPlacementRadius = diskRadius * 0.7;
-                    const hmObs = terrainRef.current;
-                    for (let i = 0; i < obsCount; i++) {
-                        const [, , , baseRadius] = OBSTACLE_DIRECTIONS[i % OBSTACLE_DIRECTIONS.length];
-                        const { x, z } = randomPointOnDisk(obsPlacementRadius);
-                        const yOff = hmObs ? sampleHeightmap(hmObs, x, z, diskRadius) : 0;
-                        obsList.push({ id: `o-${i}`, x: diskOffsetX + x, y: diskHeight + yOff, z: diskOffsetZ + z, radius: baseRadius });
-                    }
-                } else {
-                    for (let i = 0; i < OBSTACLE_DIRECTIONS.length; i++) {
-                        const [dx, dy, dz, radius] = OBSTACLE_DIRECTIONS[i % OBSTACLE_DIRECTIONS.length];
-                        try {
-                            const r = get_surface_point_in_direction(dx, dy, dz);
-                            obsList.push({ id: `o-${i}`, x: r.position[0], y: r.position[1], z: r.position[2], radius });
-                        } catch (_) {}
-                    }
+                const obsList: { id: string; x: number; y: number; z: number; radius: number}[] = [];
+                for (let i = 0; i < OBSTACLE_DIRECTIONS.length; i++) {
+                    const [dx, dy, dz, radius] = OBSTACLE_DIRECTIONS[i % OBSTACLE_DIRECTIONS.length];
+                    try {
+                        const r = get_surface_point_in_direction(dx, dy, dz);
+                        obsList.push({ id: `o-${i}`, x: r.position[0], y: r.position[1], z: r.position[2], radius });
+                    } catch (_) {}
                 }
                 setObstacles(obsList);
 
-                // Samples — randomly placed on the surface, skipping obstacle zones
+                // Samples — randomly placed on the asteroid surface, skipping obstacle zones
                 const sampleList: { id: string; x: number; y: number; z: number; model: SampleModel; rotation: string }[] = [];
-                const MIN_SAMPLE_SPACING = flatAr ? diskRadius * 0.18 : 1.5;
+                const MIN_SAMPLE_SPACING = 1.5;
                 const MAX_ATTEMPTS = modeCfg.spawnSamples * 100;
 
                 // Build a shuffled queue of model types (6 crystal / 7 ore / 7 rock for n=20)
@@ -2157,61 +1071,32 @@ const App = () => {
                 let attempts = 0;
                 while (sampleList.length < modeCfg.spawnSamples && attempts < MAX_ATTEMPTS) {
                     attempts++;
+                    const dir = randomUnitVector();
                     try {
-                        let px: number, py: number, pz: number;
-                        if (flatAr) {
-                            const pt = randomPointOnDisk(diskRadius);
-                            const hmS = terrainRef.current;
-                            const yOff = hmS ? sampleHeightmap(hmS, pt.x, pt.z, diskRadius) : 0;
-                            px = diskOffsetX + pt.x;
-                            py = diskHeight + yOff;
-                            pz = diskOffsetZ + pt.z;
-                        } else {
-                            const dir = randomUnitVector();
-                            const r = get_surface_point_in_direction(dir[0], dir[1], dir[2]);
-                            px = r.position[0]; py = r.position[1]; pz = r.position[2];
-                        }
+                        const r = get_surface_point_in_direction(dir[0], dir[1], dir[2]);
                         const insideObstacle = obsList.some(o => {
-                            const dx = px - o.x;
-                            const dy = py - o.y;
-                            const dz = pz - o.z;
+                            const dx = r.position[0] - o.x;
+                            const dy = r.position[1] - o.y;
+                            const dz = r.position[2] - o.z;
                             return dx * dx + dy * dy + dz * dz < o.radius * o.radius;
                         });
                         const tooClose = sampleList.some(s => {
-                            const dx = px - s.x;
-                            const dy = py - s.y;
-                            const dz = pz - s.z;
+                            const dx = r.position[0] - s.x;
+                            const dy = r.position[1] - s.y;
+                            const dz = r.position[2] - s.z;
                             return dx * dx + dy * dy + dz * dz < MIN_SAMPLE_SPACING * MIN_SAMPLE_SPACING;
                         });
                         if (!insideObstacle && !tooClose) {
-                            let rotation: string;
-                            if (flatAr) {
-                                // Align "up" with the heightmap normal when we have one, so crystals
-                                // tilt the way the ground tilts. Without a heightmap: straight up.
-                                const hmR = terrainRef.current;
-                                if (hmR) {
-                                    const n = sampleHeightmapNormal(hmR, px - diskOffsetX, pz - diskOffsetZ, diskRadius);
-                                    const up = new THREE.Vector3(n.nx, n.ny, n.nz);
-                                    const alignQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), up);
-                                    const yawQ = new THREE.Quaternion().setFromAxisAngle(up, Math.random() * Math.PI * 2);
-                                    alignQ.premultiply(yawQ);
-                                    const e = new THREE.Euler().setFromQuaternion(alignQ, 'YXZ');
-                                    const R2D = 180 / Math.PI;
-                                    rotation = `${e.x * R2D} ${e.y * R2D} ${e.z * R2D}`;
-                                } else {
-                                    const yawDeg = Math.random() * 360;
-                                    rotation = `0 ${yawDeg} 0`;
-                                }
-                            } else {
-                                // Align local +Y with surface normal (approximated by position-from-origin).
-                                const normal = new THREE.Vector3(px, py, pz).normalize();
-                                const alignQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
-                                const yawQ = new THREE.Quaternion().setFromAxisAngle(normal, Math.random() * Math.PI * 2);
-                                alignQ.premultiply(yawQ);
-                                const e = new THREE.Euler().setFromQuaternion(alignQ, 'YXZ');
-                                const R2D = 180 / Math.PI;
-                                rotation = `${e.x * R2D} ${e.y * R2D} ${e.z * R2D}`;
-                            }
+                            // Align sample local +Y with the surface normal (approximated by position-from-origin),
+                            // then add a random yaw around that normal for visual variety.
+                            const px = r.position[0], py = r.position[1], pz = r.position[2];
+                            const normal = new THREE.Vector3(px, py, pz).normalize();
+                            const alignQ = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+                            const yawQ = new THREE.Quaternion().setFromAxisAngle(normal, Math.random() * Math.PI * 2);
+                            alignQ.premultiply(yawQ);
+                            const e = new THREE.Euler().setFromQuaternion(alignQ, 'YXZ');
+                            const R2D = 180 / Math.PI;
+                            const rotation = `${e.x * R2D} ${e.y * R2D} ${e.z * R2D}`;
                             sampleList.push({ id: `s-${sampleList.length}`, x: px, y: py, z: pz, model: modelQueue[sampleList.length], rotation });
                         }
                     } catch (_) { }
@@ -2231,12 +1116,7 @@ const App = () => {
                 if (arrowElStop) arrowElStop.setAttribute('visible', 'false');
             }
         }
-    // Respawn when:
-    //   • gameState transitions (web/AR entry)
-    //   • the Rust mesh finishes loading
-    //   • user toggles flatSurfaceMode
-    //   • tap-to-map setup completes (arSetupPhase === READY) → spawn onto the chosen disk
-    }, [gameState, meshLoaded, flatSurfaceMode, arSetupPhase, terrainToken]);
+    }, [gameState, meshLoaded]);
 
     /** Trigger end screen when all samples collected or energy depleted (web or AR). */
     useEffect(() => {
@@ -2261,10 +1141,6 @@ const App = () => {
         if ((gameState !== 'WEB_GAME' && gameState !== 'AR_MODE') || !meshLoaded) {
             return () => { };
         }
-        // AR + flat mode: delay rover init until the player maps the play area.
-        if (gameState === 'AR_MODE' && flatSurfaceMode && arSetupPhase !== 'READY') {
-            return () => { };
-        }
         let cancelled = false;
         let retryTimer: number | null = null;
 
@@ -2286,20 +1162,10 @@ const App = () => {
                 let px: number, py: number, pz: number;
                 if (gameState === 'AR_MODE') {
                     if (roverPosRef.current) {
-                        // Anchor switched (or re-init): keep the rover where it was.
+                        // Anchor switched (or re-init): keep the rover where it was on the asteroid surface.
                         ({ x: px, y: py, z: pz } = roverPosRef.current);
-                    } else if (flatSurfaceMode) {
-                        // Flat-disk AR spawn: rover lands at the user-tapped disk center. If a
-                        // heightmap was captured, lift to the terrain's Y at that spot so the
-                        // rover sits flush with the (possibly bumpy) surface instead of floating.
-                        px = flatSurfaceOffsetX;
-                        const hmInit = terrainRef.current;
-                        const yOffset = hmInit ? sampleHeightmap(hmInit, 0, 0, flatSurfaceRadius) : 0;
-                        py = flatSurfaceHeight + yOffset;
-                        pz = flatSurfaceOffsetZ;
-                        roverPosRef.current = { x: px, y: py, z: pz };
                     } else {
-                        // Legacy: first-time AR spawn on the full asteroid surface relative to marker anchor.
+                        // Deterministic first-time AR spawn on asteroid surface relative to marker anchor.
                         const result = get_surface_point_in_direction(
                             AR_ROVER_START_DIRECTION[0],
                             AR_ROVER_START_DIRECTION[1],
@@ -2320,22 +1186,11 @@ const App = () => {
                  * Orient the rover to the surface normal BEFORE the user starts moving. If we pass
                  * a zero dir (no input yet) updateRoverRotation bails, leaving the rover in its
                  * JSX default orientation — which looks like it's "floating off" the surface in AR
-                 * (no follow-camera to hide it). In flat mode the normal is constant +Y; in mesh
-                 * mode we use the camera-frame "up" as a sensible default forward direction.
+                 * (no follow-camera to hide it). Use the camera-frame "up" as a sensible default
+                 * forward direction along the tangent plane.
                  */
-                if (gameState === 'AR_MODE' && flatSurfaceMode) {
-                    // Match the terrain slope at spawn so the rover doesn't T-pose into a hill.
-                    const hmInit2 = terrainRef.current;
-                    if (hmInit2) {
-                        const n = sampleHeightmapNormal(hmInit2, 0, 0, flatSurfaceRadius);
-                        updateRoverRotation(rover, n.nx, n.ny, n.nz, 0, 0, 1);
-                    } else {
-                        updateRoverRotation(rover, 0, 1, 0, 0, 0, 1);
-                    }
-                } else {
-                    const { up } = getCameraFrame(px, py, pz);
-                    updateRoverRotation(rover, px, py, pz, up.x, up.y, up.z);
-                }
+                const { up } = getCameraFrame(px, py, pz);
+                updateRoverRotation(rover, px, py, pz, up.x, up.y, up.z);
                 if (gameState !== 'AR_MODE') {
                     updateCamera(px, py, pz);
                 }
@@ -2384,7 +1239,7 @@ const App = () => {
             }
             keysHeld.current.clear();
         };
-    }, [gameState, meshLoaded, movementLoop, arSurfaceOffset, flatSurfaceMode, arSetupPhase]);
+    }, [gameState, meshLoaded, movementLoop, arSurfaceOffset]);
 
     /**
      * AR: when the active marker anchor changes, the <a-entity id="ar-rover"> is remounted in a new
@@ -2408,13 +1263,6 @@ const App = () => {
                 let px: number, py: number, pz: number;
                 if (roverPosRef.current) {
                     ({ x: px, y: py, z: pz } = roverPosRef.current);
-                } else if (flatSurfaceModeRef.current) {
-                    px = flatSurfaceOffsetXRef.current;
-                    const hmAR = terrainRef.current;
-                    const yOff = hmAR ? sampleHeightmap(hmAR, 0, 0, flatSurfaceRadiusRef.current) : 0;
-                    py = flatSurfaceHeightRef.current + yOff;
-                    pz = flatSurfaceOffsetZRef.current;
-                    roverPosRef.current = { x: px, y: py, z: pz };
                 } else {
                     const result = get_surface_point_in_direction(
                         AR_ROVER_START_DIRECTION[0],
@@ -2426,32 +1274,13 @@ const App = () => {
                 }
                 rover.setAttribute('position', { x: px, y: py, z: pz });
                 const [ix, iy] = lastDirectionRef.current;
-                if (flatSurfaceModeRef.current) {
-                    const hasInput = Math.abs(ix) > 1e-6 || Math.abs(iy) > 1e-6;
-                    const fx = hasInput ? ix : 0;
-                    const fz = hasInput ? iy : 1;
-                    // Tilt to terrain slope at the idle spawn position when a heightmap exists.
-                    const hmIdle = terrainRef.current;
-                    if (hmIdle) {
-                        const n = sampleHeightmapNormal(
-                            hmIdle,
-                            px - flatSurfaceOffsetXRef.current,
-                            pz - flatSurfaceOffsetZRef.current,
-                            flatSurfaceRadiusRef.current,
-                        );
-                        updateRoverRotation(rover, n.nx, n.ny, n.nz, fx, 0, fz);
-                    } else {
-                        updateRoverRotation(rover, 0, 1, 0, fx, 0, fz);
-                    }
-                } else {
-                    const { right, up } = getCameraFrame(px, py, pz);
-                    const hasInput = Math.abs(ix) > 1e-6 || Math.abs(iy) > 1e-6;
-                    const dir = hasInput
-                        ? up.clone().multiplyScalar(iy).addScaledVector(right, ix)
-                        : up.clone();
-                    updateRoverRotation(rover, px, py, pz, dir.x, dir.y, dir.z);
-                }
-                console.log(`[AR] rover re-snapped after anchor change → position=(${px.toFixed(3)}, ${py.toFixed(3)}, ${pz.toFixed(3)}) flat=${flatSurfaceModeRef.current}`);
+                const { right, up } = getCameraFrame(px, py, pz);
+                const hasInput = Math.abs(ix) > 1e-6 || Math.abs(iy) > 1e-6;
+                const dir = hasInput
+                    ? up.clone().multiplyScalar(iy).addScaledVector(right, ix)
+                    : up.clone();
+                updateRoverRotation(rover, px, py, pz, dir.x, dir.y, dir.z);
+                console.log(`[AR] rover re-snapped after anchor change → position=(${px.toFixed(3)}, ${py.toFixed(3)}, ${pz.toFixed(3)})`);
                 setRoverReady(true);
             } catch (e) {
                 console.error("AR rover re-snap failed:", e);
@@ -2625,17 +1454,6 @@ const App = () => {
 
     const activeAnchorId = arAnchorId;
 
-    /** Flat AR: while “Map your play zone” is up, hide HUD. After READY: HUD → field (mesh + collectibles) → rover. */
-    const arMapZoneActive = gameState === 'AR_MODE' && flatSurfaceMode && arSetupPhase !== 'READY';
-    const arFlatHudChromeVisible =
-        gameState !== 'AR_MODE'
-        || !flatSurfaceMode
-        || (!arMapZoneActive && (arFlatRevealPhase === 'HUD' || arFlatRevealPhase === 'FIELD' || arFlatRevealPhase === 'ROVER'));
-    const arFlatFieldEntitiesVisible =
-        gameState !== 'AR_MODE'
-        || !flatSurfaceMode
-        || (!arMapZoneActive && (arFlatRevealPhase === 'FIELD' || arFlatRevealPhase === 'ROVER'));
-
     return (
         <div className="ar-container">
             {gameState === 'MENU' && (
@@ -2688,7 +1506,7 @@ const App = () => {
                     </div>
 
                     <div className="mission-badge">
-                        <div className="badge-label">NASA Capstone Project2007</div>
+                        <div className="badge-label">NASA Capstone Project8</div>
                     </div>
                     <h1>Psyche</h1>
                     <p className="subtitle">Explore • Navigate • Discover</p>
@@ -2817,76 +1635,27 @@ const App = () => {
 
                                         {activeAnchorId === id && (
                                             <a-entity position={`${c.x} ${c.y} ${c.z}`}>
-                                                {/*
-                                                 * Virtual asteroid GLB: full calibration stack (lift / rotation / scale).
-                                                 * Kept in its own nested entity so the flat-play frame below can stay
-                                                 * scale-only — critical because tap raycasts land on the play-root's
-                                                 * local XZ plane and any rotation there would skew the pick math.
-                                                 */}
-                                                {showArAsteroid && (
-                                                    <a-entity
-                                                        position={`0 ${modelLift} ${modelBack}`}
-                                                        rotation={`${modelPitchOffsetDeg} ${modelYawOffsetDeg} ${modelRollOffsetDeg}`}
-                                                        scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
-                                                    >
+                                                <a-entity
+                                                    position={`0 ${modelLift} ${modelBack}`}
+                                                    rotation={`${modelPitchOffsetDeg} ${modelYawOffsetDeg} ${modelRollOffsetDeg}`}
+                                                    scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
+                                                >
+                                                    {showArAsteroid && (
                                                         <a-entity position={arAsteroidGltfPosition} scale={arAsteroidGltfScale}>
                                                             <a-gltf-model src={arAsteroidModelSrc} />
                                                         </a-entity>
-                                                    </a-entity>
-                                                )}
-                                                <a-entity
-                                                    id="ar-play-root"
-                                                    scale={`${modelScaleX} ${modelScaleY} ${modelScaleZ}`}
-                                                >
-                                                    {/*
-                                                     * Flat-surface walking disk. The rover, samples, and obstacles all
-                                                     * live on this disk. In setup phase we also render tap pins (center,
-                                                     * edge preview) so the user can see where they've tapped in 3D AR.
-                                                     */}
-                                                    {flatSurfaceMode && arSetupPhase !== 'AWAIT_CENTER' && (
-                                                        // Center pin — glowing dot at the tapped disk center.
-                                                        <a-entity position={`${flatSurfaceOffsetX} ${flatSurfaceHeight + 0.02} ${flatSurfaceOffsetZ}`}>
-                                                            <a-ring
-                                                                radius-inner="0.05"
-                                                                radius-outer="0.12"
-                                                                rotation="-90 0 0"
-                                                                color="#ffd86b"
-                                                                material="shader: flat; transparent: true; opacity: 0.9; side: double"
-                                                            />
-                                                            <a-sphere
-                                                                radius="0.05"
-                                                                color="#ffd86b"
-                                                                material="shader: flat; emissive: #ffd86b; emissiveIntensity: 1; transparent: true; opacity: 0.95"
-                                                                animation="property: scale; from: 1 1 1; to: 1.6 1.6 1.6; loop: true; dir: alternate; dur: 700; easing: easeInOutSine"
-                                                            />
-                                                        </a-entity>
-                                                    )}
-                                                    {/*
-                                                     * CAPTURED TERRAIN MESH — displaced CircleGeometry built from the OpenCV
-                                                     * heightmap + textured with the snapshot we took on the second tap.
-                                                     * Rendered only after tap-to-map completes and a terrain token exists.
-                                                     * The rover + samples + obstacles already have their Y values snapped
-                                                     * to this same heightmap (see spawn + movement code), so visuals and
-                                                     * physics align.
-                                                     */}
-                                                    {/* Visual only: heightmap lives in terrainRef; physics ignores hideTerrainSurface. */}
-                                                    {flatSurfaceMode && arSetupPhase === 'READY' && arFlatFieldEntitiesVisible && terrainToken && !hideTerrainSurface && (
-                                                        <a-entity
-                                                            position={`${flatSurfaceOffsetX} ${flatSurfaceHeight} ${flatSurfaceOffsetZ}`}
-                                                            {...{ 'heightmap-terrain': `token: ${terrainToken}; segments: 112; opacity: 0.72` }}
-                                                        />
                                                     )}
 
                                                     {/* Samples — GLB models matching the web game, scaled down for the marker-anchored world. */}
                                                     {samples.map((s) => (
-                                                        <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`} rotation={s.rotation} visible={arFlatFieldEntitiesVisible ? 'true' : 'false'}>
+                                                        <a-entity key={`ar-${s.id}`} position={`${s.x} ${s.y} ${s.z}`} rotation={s.rotation}>
                                                             <a-gltf-model src={`./models/${s.model}.glb`} scale={arSampleScaleStr} />
                                                         </a-entity>
                                                     ))}
 
                                                     {/* Obstacles (visual only — physics is enforced in moveRover) */}
                                                     {obstacles.map((o) => (
-                                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`} visible={arFlatFieldEntitiesVisible ? 'true' : 'false'}>
+                                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`}>
                                                             <a-sphere radius={o.radius / arObstacleParentScaleMean} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
                                                         </a-entity>
                                                     ))}
@@ -2912,15 +1681,13 @@ const App = () => {
                                                         </a-entity>
                                                     </a-entity>
 
-                                                    {/* Rover — identical primitive-built mesh used in the web game; compensates for non-uniform parent scale.
-                                                        In flat mode we hide it until the tap-to-map setup finishes so the player sees
-                                                        the empty gray surface with just the tap pins, then the rover + crystals appear. */}
+                                                    {/* Rover — identical primitive-built mesh used in the web game; compensates for non-uniform parent scale. */}
                                                     <a-entity
                                                         id="ar-rover"
                                                         position="0 0 0"
                                                         rotation="0 0 0"
                                                         scale={arRoverScaleStr}
-                                                        visible={roverReady && (!flatSurfaceMode || (arSetupPhase === 'READY' && arFlatRevealPhase === 'ROVER')) ? 'true' : 'false'}
+                                                        visible={roverReady ? 'true' : 'false'}
                                                     >
                                                         {/* Debug sphere — bright unlit green, always-on-top, co-located with rover pivot. */}
                                                         {showArRoverDebugSphere && (
@@ -2968,228 +1735,52 @@ const App = () => {
                     </div>
 
                     <div id="ui-overlay" style={{ display: 'block' }}>
-                        {scanPrompt && !(flatSurfaceMode && arSetupPhase !== 'READY') && arSetupPhase === 'AWAIT_CENTER' && arAnchorId === null && (
+                        {scanPrompt && (
                             <div id="scan-prompt">
                                 Point camera at AR marker
                             </div>
                         )}
 
-                        {/*
-                          * TAP-TO-MAP SETUP OVERLAY — creative, phase-driven prompts that replace the
-                          * slider calibration for first-time users. Each phase is one clear action:
-                          *   AWAIT_CENTER: "Tap the center of the gray face"
-                          *   AWAIT_EDGE:   "Tap the edge to size your play zone"
-                          *   READY:        hidden (game is playing)
-                          */}
-                        {gameState === 'AR_MODE' && flatSurfaceMode && arSetupPhase !== 'READY' && (
-                            <div
-                                className="ar-setup-overlay"
-                                style={{
-                                    position: 'fixed',
-                                    left: '50%',
-                                    top: 16,
-                                    transform: 'translateX(-50%)',
-                                    zIndex: 1002,
-                                    padding: '14px 22px',
-                                    borderRadius: 14,
-                                    background: 'linear-gradient(135deg, rgba(16, 26, 42, 0.92), rgba(22, 44, 64, 0.92))',
-                                    border: '1px solid rgba(123, 255, 178, 0.45)',
-                                    boxShadow: '0 10px 30px rgba(0,0,0,0.45), 0 0 24px rgba(123,255,178,0.18) inset',
-                                    color: '#E6F2FF',
-                                    fontFamily: 'inherit',
-                                    textAlign: 'center',
-                                    minWidth: 280,
-                                    maxWidth: '90vw',
-                                    backdropFilter: 'blur(8px)',
-                                    pointerEvents: 'auto',
-                                }}
-                            >
-                                <div style={{
-                                    fontSize: 10,
-                                    fontWeight: 800,
-                                    letterSpacing: 2,
-                                    color: '#7bffb2',
-                                    marginBottom: 6,
-                                    textTransform: 'uppercase',
-                                }}>
-                                    MAP YOUR PLAY ZONE · STEP {arSetupPhase === 'AWAIT_CENTER' ? '1' : '2'} OF 2
-                                </div>
-                                <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>
-                                    {arAnchorId === null
-                                        ? 'Looking for marker…'
-                                        : arSetupPhase === 'AWAIT_CENTER'
-                                            ? 'Tap the center of the gray face'
-                                            : 'Tap the edge to size your play zone'}
-                                </div>
-                                <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.35 }}>
-                                    {arAnchorId === null
-                                        ? 'Keep a marker in view, then tap directly on the printed asteroid.'
-                                        : arSetupPhase === 'AWAIT_CENTER'
-                                            ? 'This is where the rover will land.'
-                                            : 'Move your finger from the glowing pin — the farther you tap, the bigger your territory.'}
-                                </div>
-                                <div style={{
-                                    display: 'flex',
-                                    gap: 8,
-                                    justifyContent: 'center',
-                                    marginTop: 12,
-                                }}>
-                                    {arSetupPhase === 'AWAIT_EDGE' && (
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                setArSetupPhase('AWAIT_CENTER');
-                                                updateArCalibration({ flatSurfaceOffsetX: 0, flatSurfaceOffsetZ: 0 });
-                                            }}
-                                            style={{
-                                                padding: '6px 12px',
-                                                borderRadius: 8,
-                                                border: '1px solid rgba(255,255,255,0.25)',
-                                                background: 'rgba(255,255,255,0.06)',
-                                                color: '#E6F2FF',
-                                                fontSize: 11,
-                                                fontWeight: 700,
-                                                cursor: 'pointer',
-                                            }}
-                                        >
-                                            ← Redo center
-                                        </button>
-                                    )}
-                                    {arAnchorId !== null && (
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                // Skip path — drop a default disk centered on the marker.
-                                                updateArCalibration({
-                                                    flatSurfaceOffsetX: 0,
-                                                    flatSurfaceOffsetZ: 0,
-                                                    flatSurfaceRadius: (PHYSICAL_ASTEROID_BBOX_M.x / 2) / MARKER_SIZE_METERS,
-                                                });
-                                                setArSetupPhase('READY');
-                                            }}
-                                            style={{
-                                                padding: '6px 12px',
-                                                borderRadius: 8,
-                                                border: '1px solid rgba(123,255,178,0.3)',
-                                                background: 'rgba(24, 52, 40, 0.7)',
-                                                color: '#7bffb2',
-                                                fontSize: 11,
-                                                fontWeight: 700,
-                                                cursor: 'pointer',
-                                            }}
-                                        >
-                                            Skip (use default zone)
-                                        </button>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-
-                        {/*
-                          * Post-setup HUD chip — Retake / Remap only (zone size + terrain badge removed).
-                          */}
-                        {gameState === 'AR_MODE' && flatSurfaceMode && arSetupPhase === 'READY' && arFlatHudChromeVisible && (
-                            <div
-                                className="ar-setup-overlay"
-                                style={{
-                                    position: 'fixed',
-                                    left: 12,
-                                    bottom: 12,
-                                    zIndex: 1001,
-                                    padding: '6px 10px',
-                                    borderRadius: 10,
-                                    background: 'rgba(12, 20, 32, 0.7)',
-                                    border: '1px solid rgba(123,255,178,0.3)',
-                                    color: '#E6F2FF',
-                                    fontSize: 11,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 10,
-                                    pointerEvents: 'auto',
-                                }}
-                            >
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        // Re-snap terrain from the current camera view without changing the mapped disk.
-                                        try {
-                                            const cv = (window as any).cv;
-                                            const video = document.querySelector('video') as HTMLVideoElement | null;
-                                            if (cv && video && video.videoWidth > 0) {
-                                                // Use the stored pixel center if available; otherwise fall back to frame center.
-                                                const centerPx = {
-                                                    x: video.videoWidth / 2,
-                                                    y: video.videoHeight / 2,
-                                                };
-                                                const rPx = Math.min(video.videoWidth, video.videoHeight) * 0.4;
-                                                const hm = buildHeightmapFromFrame(cv, video, centerPx, rPx, 96);
-                                                if (hm) {
-                                                    terrainRef.current = hm;
-                                                    const token = `terrain-${Date.now()}`;
-                                                    _terrainPayloadRegistry.set(token, { hm, radius: flatSurfaceRadius });
-                                                    setTerrainToken(token);
-                                                    roverPosRef.current = null;
-                                                    console.log('[AR][terrain] retake complete');
-                                                }
-                                            }
-                                        } catch (err) {
-                                            console.warn('[AR][terrain] retake failed:', err);
-                                        }
-                                    }}
-                                    style={{
-                                        padding: '4px 10px',
-                                        borderRadius: 6,
-                                        border: '1px solid rgba(255,255,255,0.25)',
-                                        background: 'rgba(255,255,255,0.06)',
-                                        color: '#E6F2FF',
-                                        fontSize: 10,
-                                        fontWeight: 700,
-                                        cursor: 'pointer',
-                                    }}
-                                >
-                                    Retake
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        roverPosRef.current = null;
-                                        terrainRef.current = null;
-                                        setTerrainToken(null);
-                                        setArSetupPhase('AWAIT_CENTER');
-                                    }}
-                                    style={{
-                                        padding: '4px 10px',
-                                        borderRadius: 6,
-                                        border: '1px solid rgba(255,255,255,0.25)',
-                                        background: 'rgba(255,255,255,0.06)',
-                                        color: '#E6F2FF',
-                                        fontSize: 10,
-                                        fontWeight: 700,
-                                        cursor: 'pointer',
-                                    }}
-                                >
-                                    Remap
-                                </button>
-                            </div>
-                        )}
-
-                        <div
-                            style={{
-                                visibility: arFlatHudChromeVisible ? 'visible' : 'hidden',
-                                pointerEvents: arFlatHudChromeVisible ? 'auto' : 'none',
-                            }}
-                        >
-                            <div id="score-display">
-                                SCORE <span id="score">{score}</span>
-                            </div>
-
-                            <div className="mode-ui">
-                                {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div></div>}
-                                <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span> / {modeCfg.spawnSamples}</div>
-                            </div>
+                        <div id="score-display">
+                            SCORE <span id="score">{score}</span>
                         </div>
 
-                        {false && (
+                        <div className="mode-ui">
+                            {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div></div>}
+                            <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span> / {modeCfg.spawnSamples}</div>
+                        </div>
+
+                        {/*
+                          * AR CALIBRATION PANEL
+                          * Live-drag the sliders until the virtual asteroid matches the physical one.
+                          * Values are saved to localStorage under `nasa-psyche-ar-calibration-v1` so
+                          * they survive reloads. Use "Copy JSON" to grab the final values and bake
+                          * them into AR_CALIBRATION_DEFAULTS in code.
+                          */}
+                        <button
+                            type="button"
+                            onClick={() => setShowArCalibrationPanel((s) => !s)}
+                            style={{
+                                position: 'fixed',
+                                top: 12,
+                                right: 12,
+                                zIndex: 1001,
+                                padding: '8px 12px',
+                                borderRadius: 8,
+                                border: '1px solid rgba(255,255,255,0.25)',
+                                background: 'rgba(20, 24, 36, 0.75)',
+                                color: '#E6F2FF',
+                                fontSize: 12,
+                                fontWeight: 700,
+                                letterSpacing: 0.4,
+                                cursor: 'pointer',
+                                backdropFilter: 'blur(6px)',
+                                pointerEvents: 'auto',
+                            }}
+                        >
+                            {showArCalibrationPanel ? 'Hide Calibration' : 'Calibrate'}
+                        </button>
+                        {showArCalibrationPanel && (
                             <div
                                 style={{
                                     position: 'fixed',
@@ -3248,115 +1839,6 @@ const App = () => {
                                 >
                                     Match physical print (610×524×432 mm)
                                 </button>
-                                <div style={{
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    gap: 6,
-                                    marginBottom: 12,
-                                    padding: 8,
-                                    borderRadius: 8,
-                                    background: 'rgba(255,255,255,0.05)',
-                                    border: '1px solid rgba(255,255,255,0.12)',
-                                }}>
-                                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, opacity: 0.85 }}>
-                                        DIGITAL-TWIN RENDERING
-                                    </div>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 11 }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={hideVirtualAsteroid}
-                                            onChange={(e) => updateArCalibration({ hideVirtualAsteroid: e.target.checked })}
-                                        />
-                                        <span>Hide virtual asteroid (see real rock through camera; rover + crystals + obstacles ride the invisible twin)</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 11 }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={showCalibrationCube}
-                                            onChange={(e) => updateArCalibration({ showCalibrationCube: e.target.checked })}
-                                        />
-                                        <span>Show red 2″ marker cube (diagnostic only)</span>
-                                    </label>
-                                </div>
-                                <div style={{
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    gap: 6,
-                                    marginBottom: 12,
-                                    padding: 8,
-                                    borderRadius: 8,
-                                    background: 'rgba(123,255,178,0.06)',
-                                    border: '1px solid rgba(123,255,178,0.25)',
-                                }}>
-                                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, opacity: 0.85 }}>
-                                        FLAT-SURFACE ROVER (gray face of printed asteroid)
-                                    </div>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 11 }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={flatSurfaceMode}
-                                            onChange={(e) => updateArCalibration({ flatSurfaceMode: e.target.checked })}
-                                        />
-                                        <span>Flat-surface mode (rover walks on a disk instead of wrapping the full sphere)</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 11 }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={showFlatDisk}
-                                            onChange={(e) => updateArCalibration({ showFlatDisk: e.target.checked })}
-                                        />
-                                        <span>Show green disk outline (turn off for clean play)</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 11 }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={hideTerrainSurface}
-                                            onChange={(e) => updateArCalibration({ hideTerrainSurface: e.target.checked })}
-                                        />
-                                        <span>
-                                            Hide terrain mesh only (snapshot overlay). Rover tilt, height, samples, and obstacles still use the captured heightmap; turn off to draw the textured bump map on top of the print.
-                                        </span>
-                                    </label>
-                                    <div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                                            <span>Disk radius (marker units)</span>
-                                            <span style={{ color: '#7bffb2', fontVariantNumeric: 'tabular-nums' }}>
-                                                {flatSurfaceRadius.toFixed(2)} ≈ {(flatSurfaceRadius * MARKER_SIZE_METERS * 1000).toFixed(0)} mm
-                                            </span>
-                                        </div>
-                                        <input
-                                            type="range"
-                                            min={1}
-                                            max={20}
-                                            step={0.1}
-                                            value={flatSurfaceRadius}
-                                            onChange={(e) => updateArCalibration({ flatSurfaceRadius: parseFloat(e.target.value) })}
-                                            style={{ width: '100%', accentColor: '#7bffb2' }}
-                                        />
-                                    </div>
-                                    <div>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                                            <span>Disk height (marker units)</span>
-                                            <span style={{ color: '#7bffb2', fontVariantNumeric: 'tabular-nums' }}>{flatSurfaceHeight.toFixed(2)}</span>
-                                        </div>
-                                        <input
-                                            type="range"
-                                            min={-20}
-                                            max={20}
-                                            step={0.1}
-                                            value={flatSurfaceHeight}
-                                            onChange={(e) => updateArCalibration({ flatSurfaceHeight: parseFloat(e.target.value) })}
-                                            style={{ width: '100%', accentColor: '#7bffb2' }}
-                                        />
-                                    </div>
-                                    <GrayDiskAutoFitRow
-                                        cvReady={cvReady}
-                                        lastDetection={grayDetection}
-                                        onApply={(detectedRadiusMarkerUnits) => {
-                                            updateArCalibration({ flatSurfaceRadius: detectedRadiusMarkerUnits });
-                                        }}
-                                    />
-                                </div>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer', fontSize: 11 }}>
                                     <input
                                         type="checkbox"
@@ -3596,13 +2078,7 @@ const App = () => {
                             </div>
                         )}
 
-                        <div
-                            id="controls"
-                            style={{
-                                visibility: arFlatHudChromeVisible ? 'visible' : 'hidden',
-                                pointerEvents: arFlatHudChromeVisible ? 'auto' : 'none',
-                            }}
-                        >
+                        <div id="controls">
                             <div
                                 className="dpad-circle"
                                 onPointerDown={(e) => { e.preventDefault(); (e.target as HTMLElement).setPointerCapture(e.pointerId); updateDpadFromPointer(e); }}

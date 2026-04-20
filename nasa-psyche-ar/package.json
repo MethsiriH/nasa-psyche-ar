@@ -17,7 +17,8 @@
     "calibrate:python:cam1": "python scripts/calibration.py --camera 1",
     "calibrate:surface": "python scripts/calibration.py --camera 1 --target-ids 0,2,5,7 --merge-existing",
     "probe:table-rotation": "python scripts/table_rotation_probe.py",
-    "probe:surface-pairs": "python scripts/surface_pair_probe.py"
+    "probe:surface-pairs": "python scripts/surface_pair_probe.py",
+    "ar:collision-bbox": "node scripts/compute-collision-mesh-bbox.mjs"
   },
   "dependencies": {
     "@ar-js-org/ar.js": "^3.4.8",

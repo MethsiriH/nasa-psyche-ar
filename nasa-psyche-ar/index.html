@@ -16,6 +16,12 @@
     <title>NASA Psyche AR</title>
     <script src="/vendor/aframe.min.js"></script>
     <script src="/vendor/aframe-ar.js"></script>
+    <!--
+      OpenCV.js — used client-side to detect the gray silhouette of the 3D-printed asteroid in the
+      AR camera feed. We load it async so the UI can mount first, then wire `cv.onRuntimeInitialized`
+      when it's ready. File served from public/vendor/opencv.js so builds are fully offline.
+    -->
+    <script async src="/vendor/opencv.js"></script>
   </head>
   <body>
     <div id="root"></div>
