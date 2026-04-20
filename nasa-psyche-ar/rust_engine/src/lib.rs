@@ -127,12 +127,13 @@ pub fn move_rover_on_asteroid(
     let desired = Vector3::new(dir_x, dir_y, dir_z);
     let projected = desired - surface_normal * desired.dot(&surface_normal);
 
-    let movement = if projected.norm() > 0.001 {
-        projected.normalize() * speed
+    let projected_len = projected.norm();
+
+    let movement = if projected_len > 0.001 {
+        projected * (speed / projected_len.max(1.0))
     } else {
         Vector3::zeros()
     };
-
     let desired_pos = rover_pos + movement;
 
     /* Raycast from outside toward center to find surface intersection. */
