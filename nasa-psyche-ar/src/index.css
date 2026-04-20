@@ -438,6 +438,16 @@ body {
     inset 0 0 20px rgba(255, 255, 255, 0.1);
 }
 
+/* AR: half-size touch ring so HUD matches smaller in-scene scale */
+.dpad-circle.dpad-circle--ar {
+  width: 90px;
+  height: 90px;
+  border-width: 1px;
+  box-shadow:
+    0 0 12px rgba(0, 212, 255, 0.22),
+    inset 0 0 16px rgba(255, 255, 255, 0.05);
+}
+
 .dpad-container {
   position: relative;
   width: 180px;
@@ -568,6 +578,11 @@ body {
   .dpad-center {
     width: 45px;
     height: 45px;
+  }
+
+  .dpad-circle.dpad-circle--ar {
+    width: 80px;
+    height: 80px;
   }
 }
 

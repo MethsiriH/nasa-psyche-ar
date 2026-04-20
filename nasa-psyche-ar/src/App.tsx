@@ -4,6 +4,7 @@
  */
 import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react';
 import MODE_CONFIG, { Difficulty } from './modeConfig';
+import { augmentHeightmapWithDepthFromMotion } from './arDepthFromMotion';
 // @ts-ignore
 import init, { start_ar_session, load_collision_mesh, move_rover_on_asteroid, get_surface_point_in_direction } from '../rust_engine/pkg/rust_engine';
 
@@ -24,7 +25,12 @@ const MAX_ENERGY = 50;
 /** AR rover moves at a smaller step size than web since the marker-anchored world is smaller.
  *  Tuned down so the rover crawls across the captured terrain and the physics has time to
  *  sample the heightmap faithfully at each tick. */
-const AR_ROVER_SPEED_SCALE = 0.01875;
+const AR_ROVER_SPEED_SCALE = 0.009375;
+/**
+ * Flat AR: keep rover, samples, and obstacles inside this fraction of the mapped disk radius.
+ * Matches the circular depth crop so gameplay stays on the reliable height / motion field, not the rim.
+ */
+const AR_FLAT_PLAY_INNER_RADIUS_FR = 0.82;
 /** Deterministic initial rover spawn direction in asteroid-local space for AR. */
 const AR_ROVER_START_DIRECTION: [number, number, number] = [0, 1, 0];
 
@@ -257,10 +263,11 @@ function stepOnFlatDisk(
     const dx = newX - centerX;
     const dz = newZ - centerZ;
     const r = Math.hypot(dx, dz);
-    if (r <= radius || r < 1e-6) {
+    const clampR = radius * AR_FLAT_PLAY_INNER_RADIUS_FR;
+    if (r <= clampR || r < 1e-6) {
         return { x: newX, y: height, z: newZ };
     }
-    const s = radius / r;
+    const s = clampR / r;
     return { x: centerX + dx * s, y: height, z: centerZ + dz * s };
 }
 
@@ -297,6 +304,10 @@ export type TerrainHeightmap = {
     sourceFrameH: number;
     centerPx: { x: number; y: number }; // circle center in source frame pixels
     radiusPx: number;                    // circle radius in source frame pixels
+    /** Video-pixel crop used for OpenCV (same rect as texture crop) — feeds depth-from-motion. */
+    cropRect: { x: number; y: number; size: number };
+    /** Jet heatmap of the motion-depth proxy (see `augmentHeightmapWithDepthFromMotion`). */
+    depthDebugUrl?: string;
 };
 
 /**
@@ -397,13 +408,14 @@ function stepOnHeightmap(
     const dx = newX - centerX;
     const dz = newZ - centerZ;
     const r = Math.hypot(dx, dz);
+    const clampR = radius * AR_FLAT_PLAY_INNER_RADIUS_FR;
     let px: number;
     let pz: number;
-    if (r <= radius || r < 1e-6) {
+    if (r <= clampR || r < 1e-6) {
         px = newX;
         pz = newZ;
     } else {
-        const s = radius / r;
+        const s = clampR / r;
         px = centerX + dx * s;
         pz = centerZ + dz * s;
     }
@@ -608,6 +620,7 @@ function buildHeightmapFromFrame(
         sourceFrameH: vh,
         centerPx: { x: cx, y: cy },
         radiusPx: cropSize / 2,
+        cropRect: { x: cropX, y: cropY, size: cropSize },
     };
 }
 
@@ -1030,6 +1043,8 @@ const App = () => {
      * (see registerHeightmapTerrainComponent). When the token changes, the component rebuilds.
      */
     const [terrainToken, setTerrainToken] = useState<string | null>(null);
+    /** Jet heatmap preview of motion-fused depth (AR flat mode). */
+    const [arDepthHeatmapUrl, setArDepthHeatmapUrl] = useState<string | null>(null);
     const terrainRef = useRef<TerrainHeightmap | null>(null);
     // Screen-space pixel coordinates of each tap — needed to crop the correct circle out of the video frame.
     const tapScreenCenterRef = useRef<{ x: number; y: number } | null>(null);
@@ -1271,7 +1286,7 @@ const App = () => {
             return { x: hitLocal.x, z: hitLocal.z };
         };
 
-        const onPointerDown = (e: PointerEvent) => {
+        const onPointerDown = async (e: PointerEvent) => {
             // Ignore taps on HTML UI overlays; they already have pointer-events: auto and stop props on their own buttons.
             if ((e.target as HTMLElement)?.closest('.ar-setup-overlay')) return;
             const hit = raycastToPlayPlane(e.clientX, e.clientY);
@@ -1308,6 +1323,7 @@ const App = () => {
                         const rVid = Math.max(16, Math.hypot(exVid - cxVid, eyVid - cyVid));
                         const hm = buildHeightmapFromFrame(cv, video, { x: cxVid, y: cyVid }, rVid, 96);
                         if (hm) {
+                            await augmentHeightmapWithDepthFromMotion(cv, video, hm);
                             terrainRef.current = hm;
                             const token = `terrain-${Date.now()}`;
                             _terrainPayloadRegistry.set(token, { hm, radius });
@@ -1317,15 +1333,19 @@ const App = () => {
                                 if (oldest) _terrainPayloadRegistry.delete(oldest);
                             }
                             setTerrainToken(token);
-                            console.log(`[AR][terrain] heightmap built (${hm.size}×${hm.size}, crop r=${rVid.toFixed(0)}px)`);
+                            setArDepthHeatmapUrl(hm.depthDebugUrl ?? null);
+                            console.log(`[AR][terrain] heightmap + depth-from-motion (${hm.size}×${hm.size}, crop r=${rVid.toFixed(0)}px)`);
                         } else {
                             console.warn('[AR][terrain] heightmap build returned null');
+                            setArDepthHeatmapUrl(null);
                         }
                     } else {
                         console.warn('[AR][terrain] skipping build — cv/video not ready');
+                        setArDepthHeatmapUrl(null);
                     }
                 } catch (err) {
                     console.warn('[AR][terrain] capture failed:', err);
+                    setArDepthHeatmapUrl(null);
                 }
 
                 setArSetupPhase('READY');
@@ -1333,9 +1353,10 @@ const App = () => {
             }
         };
 
-        canvas.addEventListener('pointerdown', onPointerDown);
+        const onPointerDownBound = (ev: Event) => { void onPointerDown(ev as PointerEvent); };
+        canvas.addEventListener('pointerdown', onPointerDownBound);
         return () => {
-            canvas.removeEventListener('pointerdown', onPointerDown);
+            canvas.removeEventListener('pointerdown', onPointerDownBound);
         };
     }, [gameState, flatSurfaceMode, arSetupPhase, arAnchorId, modelScaleX, modelScaleY, modelScaleZ, flatSurfaceOffsetX, flatSurfaceOffsetZ, updateArCalibration]);
 
@@ -1353,25 +1374,23 @@ const App = () => {
     const markerOverlayShiftZ = 0.0;
 
     // Interior sizes expressed as fractions of the reference cube edge.
-    /** ×4 vs calibrated `sampleScaleFr` so crystals read clearly on the physical asteroid. */
-    const AR_SAMPLE_SCALE_FR = sampleScaleFr * 4;
-    const AR_ARROW_CONE_HEIGHT_FR = 0.015;
-    const AR_ARROW_CONE_RADIUS_FR = 0.008;
-    const AR_ARROW_CYL_RADIUS_FR = 0.002;
-    const AR_ARROW_CYL_HEIGHT_FR = 0.018;
-    const AR_ARROW_CONE_OFFSET_Y_FR = 0.016;
-    const AR_ARROW_CYL_OFFSET_Y_FR = 0.003;
-    const AR_ARROW_ORBIT_RADIUS_FR = 0.2 / MARKER_CUBE_WIDTH_RATIO;
-    const AR_ARROW_NORMAL_OFFSET_FR = 0.04;
-    const AR_COLLECTION_RADIUS_FR = 0.25;
-    const AR_ROVER_SURFACE_OFFSET_FR = 0.06;
-    // 1.25 = the previous 5.0 value scaled down 4× per user request. Makes the rover feel
-    // appropriately tiny against the printed asteroid instead of filling the disk.
-    const AR_ROVER_DESIRED_SCALE_FR = 1.25;
+    /** ×2 vs calibrated `sampleScaleFr` (prior ×4 halved) so AR crystals stay readable but compact. */
+    const AR_SAMPLE_SCALE_FR = sampleScaleFr * 2;
+    const AR_ARROW_CONE_HEIGHT_FR = 0.0075;
+    const AR_ARROW_CONE_RADIUS_FR = 0.004;
+    const AR_ARROW_CYL_RADIUS_FR = 0.001;
+    const AR_ARROW_CYL_HEIGHT_FR = 0.009;
+    const AR_ARROW_CONE_OFFSET_Y_FR = 0.008;
+    const AR_ARROW_CYL_OFFSET_Y_FR = 0.0015;
+    const AR_ARROW_ORBIT_RADIUS_FR = 0.1 / MARKER_CUBE_WIDTH_RATIO;
+    const AR_ARROW_NORMAL_OFFSET_FR = 0.02;
+    const AR_COLLECTION_RADIUS_FR = 0.125;
+    const AR_ROVER_SURFACE_OFFSET_FR = 0.03;
+    // Halved again from 1.25 so rover + field read smaller on the print.
+    const AR_ROVER_DESIRED_SCALE_FR = 0.625;
 
     const arSampleScale = markerOverlaySize * AR_SAMPLE_SCALE_FR;
     const arSampleScaleStr = `${arSampleScale} ${arSampleScale} ${arSampleScale}`;
-    const arObstacleParentScaleMean = (modelScaleX + modelScaleY + modelScaleZ) / 3;
     const arArrowConeHeight = markerOverlaySize * AR_ARROW_CONE_HEIGHT_FR;
     const arArrowConeRadiusBottom = markerOverlaySize * AR_ARROW_CONE_RADIUS_FR;
     const arArrowCylRadius = markerOverlaySize * AR_ARROW_CYL_RADIUS_FR;
@@ -1465,6 +1484,7 @@ const App = () => {
             setArSetupPhase('AWAIT_CENTER');
             terrainRef.current = null;
             setTerrainToken(null);
+            setArDepthHeatmapUrl(null);
             setGameState('AR_MODE');
             // AR Experience launched from the Launch flow uses the same intro/briefing as web.
             if (chosenDifficulty !== undefined) {
@@ -2105,6 +2125,7 @@ const App = () => {
                 // around an invisible back side. Web game still uses the full 3D mesh physics.
                 const flatAr = gameState === 'AR_MODE' && flatSurfaceMode;
                 const diskRadius = flatSurfaceRadius;
+                const playRadius = diskRadius * AR_FLAT_PLAY_INNER_RADIUS_FR;
                 const diskHeight = flatSurfaceHeight;
                 const diskOffsetX = flatSurfaceOffsetX;
                 const diskOffsetZ = flatSurfaceOffsetZ;
@@ -2112,17 +2133,23 @@ const App = () => {
                 // Obstacles — spawned first so sample placement can avoid them
                 const obsList: { id: string; x: number; y: number; z: number; radius: number }[] = [];
                 if (flatAr) {
-                    // A few obstacles scattered on the disk; keep them inside ~70% radius so the rim stays traversable.
+                    // A few obstacles scattered on the disk; keep them inside the same inner ring as flat movement.
                     // When a terrain heightmap is captured, lift each obstacle to the local surface height
                     // so it sits inside dents / on top of bumps instead of floating at the disk plane.
                     const obsCount = Math.min(OBSTACLE_DIRECTIONS.length, 6);
-                    const obsPlacementRadius = diskRadius * 0.7;
+                    const obsPlacementRadius = playRadius * 0.85;
                     const hmObs = terrainRef.current;
                     for (let i = 0; i < obsCount; i++) {
                         const [, , , baseRadius] = OBSTACLE_DIRECTIONS[i % OBSTACLE_DIRECTIONS.length];
                         const { x, z } = randomPointOnDisk(obsPlacementRadius);
                         const yOff = hmObs ? sampleHeightmap(hmObs, x, z, diskRadius) : 0;
-                        obsList.push({ id: `o-${i}`, x: diskOffsetX + x, y: diskHeight + yOff, z: diskOffsetZ + z, radius: baseRadius });
+                        obsList.push({
+                            id: `o-${i}`,
+                            x: diskOffsetX + x,
+                            y: diskHeight + yOff,
+                            z: diskOffsetZ + z,
+                            radius: baseRadius * 0.5,
+                        });
                     }
                 } else {
                     for (let i = 0; i < OBSTACLE_DIRECTIONS.length; i++) {
@@ -2137,7 +2164,7 @@ const App = () => {
 
                 // Samples — randomly placed on the surface, skipping obstacle zones
                 const sampleList: { id: string; x: number; y: number; z: number; model: SampleModel; rotation: string }[] = [];
-                const MIN_SAMPLE_SPACING = flatAr ? diskRadius * 0.18 : 1.5;
+                const MIN_SAMPLE_SPACING = flatAr ? playRadius * 0.22 : 1.5;
                 const MAX_ATTEMPTS = modeCfg.spawnSamples * 100;
 
                 // Build a shuffled queue of model types (6 crystal / 7 ore / 7 rock for n=20)
@@ -2160,7 +2187,7 @@ const App = () => {
                     try {
                         let px: number, py: number, pz: number;
                         if (flatAr) {
-                            const pt = randomPointOnDisk(diskRadius);
+                            const pt = randomPointOnDisk(playRadius);
                             const hmS = terrainRef.current;
                             const yOff = hmS ? sampleHeightmap(hmS, pt.x, pt.z, diskRadius) : 0;
                             px = diskOffsetX + pt.x;
@@ -2688,7 +2715,7 @@ const App = () => {
                     </div>
 
                     <div className="mission-badge">
-                        <div className="badge-label">NASA Capstone Project2007</div>
+                        <div className="badge-label">NASA Capstone Project2020</div>
                     </div>
                     <h1>Psyche</h1>
                     <p className="subtitle">Explore • Navigate • Discover</p>
@@ -2884,12 +2911,7 @@ const App = () => {
                                                         </a-entity>
                                                     ))}
 
-                                                    {/* Obstacles (visual only — physics is enforced in moveRover) */}
-                                                    {obstacles.map((o) => (
-                                                        <a-entity key={`ar-${o.id}`} position={`${o.x} ${o.y} ${o.z}`} visible={arFlatFieldEntitiesVisible ? 'true' : 'false'}>
-                                                            <a-sphere radius={o.radius / arObstacleParentScaleMean} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
-                                                        </a-entity>
-                                                    ))}
+                                                    {/* Obstacles: collision + energy still use `obstacles`; red markers removed per user request. */}
 
                                                     {/* Nearest-sample indicator arrow (tangent-plane orbit). */}
                                                     <a-entity id="sample-arrow" visible="false">
@@ -3111,30 +3133,32 @@ const App = () => {
                                 <button
                                     type="button"
                                     onClick={() => {
-                                        // Re-snap terrain from the current camera view without changing the mapped disk.
-                                        try {
-                                            const cv = (window as any).cv;
-                                            const video = document.querySelector('video') as HTMLVideoElement | null;
-                                            if (cv && video && video.videoWidth > 0) {
-                                                // Use the stored pixel center if available; otherwise fall back to frame center.
-                                                const centerPx = {
-                                                    x: video.videoWidth / 2,
-                                                    y: video.videoHeight / 2,
-                                                };
-                                                const rPx = Math.min(video.videoWidth, video.videoHeight) * 0.4;
-                                                const hm = buildHeightmapFromFrame(cv, video, centerPx, rPx, 96);
-                                                if (hm) {
-                                                    terrainRef.current = hm;
-                                                    const token = `terrain-${Date.now()}`;
-                                                    _terrainPayloadRegistry.set(token, { hm, radius: flatSurfaceRadius });
-                                                    setTerrainToken(token);
-                                                    roverPosRef.current = null;
-                                                    console.log('[AR][terrain] retake complete');
+                                        void (async () => {
+                                            try {
+                                                const cv = (window as any).cv;
+                                                const video = document.querySelector('video') as HTMLVideoElement | null;
+                                                if (cv && video && video.videoWidth > 0) {
+                                                    const centerPx = {
+                                                        x: video.videoWidth / 2,
+                                                        y: video.videoHeight / 2,
+                                                    };
+                                                    const rPx = Math.min(video.videoWidth, video.videoHeight) * 0.4;
+                                                    const hm = buildHeightmapFromFrame(cv, video, centerPx, rPx, 96);
+                                                    if (hm) {
+                                                        await augmentHeightmapWithDepthFromMotion(cv, video, hm);
+                                                        terrainRef.current = hm;
+                                                        const token = `terrain-${Date.now()}`;
+                                                        _terrainPayloadRegistry.set(token, { hm, radius: flatSurfaceRadius });
+                                                        setTerrainToken(token);
+                                                        setArDepthHeatmapUrl(hm.depthDebugUrl ?? null);
+                                                        roverPosRef.current = null;
+                                                        console.log('[AR][terrain] retake complete (with depth-from-motion)');
+                                                    }
                                                 }
+                                            } catch (err) {
+                                                console.warn('[AR][terrain] retake failed:', err);
                                             }
-                                        } catch (err) {
-                                            console.warn('[AR][terrain] retake failed:', err);
-                                        }
+                                        })();
                                     }}
                                     style={{
                                         padding: '4px 10px',
@@ -3155,6 +3179,7 @@ const App = () => {
                                         roverPosRef.current = null;
                                         terrainRef.current = null;
                                         setTerrainToken(null);
+                                        setArDepthHeatmapUrl(null);
                                         setArSetupPhase('AWAIT_CENTER');
                                     }}
                                     style={{
@@ -3170,6 +3195,35 @@ const App = () => {
                                 >
                                     Remap
                                 </button>
+                            </div>
+                        )}
+
+                        {gameState === 'AR_MODE' && flatSurfaceMode && arDepthHeatmapUrl && arFlatHudChromeVisible && (
+                            <div
+                                style={{
+                                    position: 'fixed',
+                                    right: 14,
+                                    bottom: 118,
+                                    zIndex: 1000,
+                                    pointerEvents: 'none',
+                                    textAlign: 'right',
+                                }}
+                            >
+                                <div style={{ fontSize: 7, fontWeight: 700, letterSpacing: 0.35, color: '#b8e8ff', opacity: 0.9, marginBottom: 2 }}>
+                                    Depth (motion)
+                                </div>
+                                <img
+                                    src={arDepthHeatmapUrl}
+                                    alt=""
+                                    width={28}
+                                    height={28}
+                                    style={{
+                                        borderRadius: 4,
+                                        border: '1px solid rgba(123,255,178,0.35)',
+                                        boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
+                                        display: 'block',
+                                    }}
+                                />
                             </div>
                         )}
 
@@ -3604,7 +3658,7 @@ const App = () => {
                             }}
                         >
                             <div
-                                className="dpad-circle"
+                                className="dpad-circle dpad-circle--ar"
                                 onPointerDown={(e) => { e.preventDefault(); (e.target as HTMLElement).setPointerCapture(e.pointerId); updateDpadFromPointer(e); }}
                                 onPointerMove={(e) => { if (e.buttons) updateDpadFromPointer(e); }}
                                 onPointerUp={(e) => { (e.target as HTMLElement).releasePointerCapture(e.pointerId); clearDpadInput(); }}
@@ -3698,12 +3752,7 @@ const App = () => {
                                 </a-entity>
                             ))}
 
-                            {/* Obstacles (visual only) */}
-                            {obstacles.map(o => (
-                                <a-entity key={o.id} position={`${o.x} ${o.y} ${o.z}`}>
-                                    <a-sphere radius={o.radius} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
-                                </a-entity>
-                            ))}
+                            {/* Obstacles: logic in moveRover; red sphere visuals removed per user request. */}
 
                             {/* Sample indicator arrow — orbits rover in tangent plane toward nearest sample */}
                             <a-entity id="sample-arrow" visible="false">
