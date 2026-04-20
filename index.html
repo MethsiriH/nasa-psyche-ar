@@ -16,7 +16,13 @@
     <title>NASA Psyche AR</title>
     <script src="/nasa-psyche-ar/vendor/aframe.min.js"></script>
     <script src="/nasa-psyche-ar/vendor/aframe-ar.js"></script>
-    <script type="module" crossorigin src="/nasa-psyche-ar/assets/index-D3Lf-TZK.js"></script>
+    <!--
+      OpenCV.js — used client-side to detect the gray silhouette of the 3D-printed asteroid in the
+      AR camera feed. We load it async so the UI can mount first, then wire `cv.onRuntimeInitialized`
+      when it's ready. File served from public/vendor/opencv.js so builds are fully offline.
+    -->
+    <script async src="/nasa-psyche-ar/vendor/opencv.js"></script>
+    <script type="module" crossorigin src="/nasa-psyche-ar/assets/index-DvqW8M_U.js"></script>
     <link rel="stylesheet" crossorigin href="/nasa-psyche-ar/assets/index-Cg_BBg8w.css">
   </head>
   <body>
