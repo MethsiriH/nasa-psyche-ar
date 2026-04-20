@@ -50,11 +50,6 @@ const generateStars = (count: number) => {
 
 const STARS = generateStars(250);
 
-/** World-space directions for raycasting waypoint positions on the asteroid surface. */
-const WAYPOINT_DIRECTIONS: [number, number, number][] = [
-    [0.707, 0, 0.707], [-0.707, 0.2, 0.707], [0, 0.707, 0.707], [0, -0.707, 0.707],
-    [0.707, 0.707, 0], [-0.707, 0.5, -0.5], [0, 0, -1], [0.5, -0.707, -0.5],
-];
 
 const INTRO_CONTENT: Record<string, { welcome: string; description: string }> = {
     easy: {
@@ -131,13 +126,6 @@ const App = () => {
     const [endReason, setEndReason] = useState<'complete' | 'energy'>('complete');
     const [energyBonus, setEnergyBonus] = useState(0);
 
-    // Centralized difficulty configuration placeholder.
-
-    const difficultyConfig: Record<string, any> = {
-        easy: { spawnCount: 4, scoreMultiplier: 0.8 },
-        normal: { spawnCount: 6, scoreMultiplier: 1.0 },
-        hard: { spawnCount: 8, scoreMultiplier: 1.25 },
-    };
     const [scanPrompt, setScanPrompt] = useState(true);
     const [meshLoaded, setMeshLoaded] = useState(false);
     const [roverReady, setRoverReady] = useState(false);
