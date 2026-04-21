@@ -1024,11 +1024,21 @@ const App = () => {
                             </section>
 
                             <section className="credits-section">
+                                <h3 className="credits-section-heading">Citations</h3>
+                                <ul className="credits-list">
+                                    <li>NASA JPL Psyche Press Kit: https://www.jpl.nasa.gov/press-kits/psyche/</li>
+                                    <li>Psyche Mission FAQ: https://psyche.ssl.berkeley.edu/mission/faq/</li>
+                                </ul>
+                            </section>
+
+                            <section className="credits-section">
                                 <h3 className="credits-section-heading">Disclaimer</h3>
                                 <p className="credits-disclaimer">
-                                    This work was created in partial fulfillment of University of Arkansas Capstone Course “CSCE 49603 - Capstone II″. The work is a result of the Psyche Student Collaborations component of NASA’s Psyche Mission (https://psyche.ssl.berkeley.edu)
-                                    “Psyche: A Journey to a Metal World” [Contract number NNM16AA09C] is part of the NASA Discovery Program mission to solar system targets. Trade names and trademarks of ASU and NASA are used in this work for identification only.
+                                    This work was created in partial fulfillment of University of Arkansas Capstone Course "CSCE 49603 - Capstone II". The work is a result of the Psyche Student Collaborations component of NASA's Psyche Mission (https://psyche.ssl.berkeley.edu)
+                                    "Psyche: A Journey to a Metal World" [Contract number NNM16AA09C] is part of the NASA Discovery Program mission to solar system targets. Trade names and trademarks of ASU and NASA are used in this work for identification only.
                                     Their usage does not constitute an official endorsement, either expressed or implied, by Arizona State University or National Aeronautics and Space Administration. The content is solely the responsibility of the authors and does not necessarily represent the official views of ASU or NASA.
+                                    <br />
+                                    The use of a rover on Psyche is not mission accurate and is included for gameplay purposes only.
                                 </p>
                             </section>
 
