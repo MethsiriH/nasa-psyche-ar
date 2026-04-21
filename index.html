@@ -12,7 +12,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Full-bleed camera AR on phones: notches (viewport-fit), Android Chrome URL bar (interactive-widget), no accidental zoom while moving -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content, maximum-scale=1, user-scalable=no"
+    />
+    <meta name="theme-color" content="#0a0f18" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>NASA Psyche AR</title>
     <script src="/nasa-psyche-ar/vendor/aframe.min.js"></script>
     <script src="/nasa-psyche-ar/vendor/aframe-ar.js"></script>
@@ -22,10 +30,10 @@
       when it's ready. File served from public/vendor/opencv.js so builds are fully offline.
     -->
     <script async src="/nasa-psyche-ar/vendor/opencv.js"></script>
-    <script type="module" crossorigin src="/nasa-psyche-ar/assets/index-GGF1BTkl.js"></script>
-    <link rel="stylesheet" crossorigin href="/nasa-psyche-ar/assets/index-CUKdIpYr.css">
+    <script type="module" crossorigin src="/nasa-psyche-ar/assets/index-D5cDht80.js"></script>
+    <link rel="stylesheet" crossorigin href="/nasa-psyche-ar/assets/index-c1wazSFv.css">
   </head>
-  <body>
-    <div id="root"></div>
+  <body class="ar-app-body">
+    <div id="root" class="ar-root-mount"></div>
   </body>
 </html>
