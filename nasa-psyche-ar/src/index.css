@@ -927,6 +927,33 @@ body {
   line-height: 1.5;
 }
 
+.credits-list a {
+  color: #00d4ff;
+  text-decoration: none;
+}
+
+.credits-list a:hover {
+  text-decoration: underline;
+}
+
+.credits-modal::-webkit-scrollbar {
+  width: 6px;
+}
+
+.credits-modal::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.04);
+  border-radius: 3px;
+}
+
+.credits-modal::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #00d4ff, #7b2cbf);
+  border-radius: 3px;
+}
+
+.credits-modal::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #00d4ff, #ff006e);
+}
+
 .credits-disclaimer {
   font-size: 0.88rem;
   color: rgba(255,255,255,0.6);
