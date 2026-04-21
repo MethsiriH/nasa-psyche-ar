@@ -14,6 +14,7 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
+  height: 100dvh;
   background: radial-gradient(ellipse at bottom, #0d1b2a 0%, #000000 100%);
   display: flex;
   flex-direction: column;
@@ -220,19 +221,57 @@ body {
     font-size: 3rem;
     letter-spacing: 4px;
   }
-  
+
   .subtitle {
     font-size: 1rem;
   }
-  
+
   #start-button, #play-button, #credits-button {
     font-size: 1rem;
     padding: 18px 40px;
   }
-  
+
   #play-button {
     font-size: 1.2rem;
     padding: 20px 50px;
+  }
+}
+
+/* Mobile landscape: compact layout with scrolling */
+@media (orientation: landscape) and (max-height: 500px) {
+  #start-screen {
+    justify-content: flex-start;
+    overflow-y: auto;
+    padding: 16px 0;
+  }
+
+  #start-screen h1 {
+    font-size: 2rem;
+    letter-spacing: 3px;
+    margin-bottom: 6px;
+  }
+
+  .subtitle {
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+  }
+
+  .mission-badge {
+    margin-bottom: 10px;
+  }
+
+  .button-container {
+    gap: 10px;
+  }
+
+  #start-button, #play-button, #credits-button {
+    font-size: 0.9rem;
+    padding: 12px 30px;
+  }
+
+  #play-button {
+    font-size: 1rem;
+    padding: 14px 40px;
   }
 }
 
