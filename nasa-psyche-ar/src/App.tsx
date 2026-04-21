@@ -146,6 +146,7 @@ const App = () => {
     const arBtnRef = useRef<HTMLButtonElement | null>(null);
     const creditsBtnRef = useRef<HTMLButtonElement | null>(null);
     const diffBtnRefs = [useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null)];
+    const sampleContinueBtnRef = useRef<HTMLButtonElement | null>(null);
     const [waypointPopup, setWaypointPopup] = useState<{ title: string; body?: string; image?: string; } | null>(null);
 
     /** Initialize WASM and load asteroid collision mesh from GLB. */
@@ -533,17 +534,30 @@ const App = () => {
      */
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
+            if (waypointPopup) {
+                if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ' || e.code === 'Space') {
+                    e.preventDefault();
+                    setWaypointPopup(null);
+                    return;
+                }
+            }
+            if (showIntroPopup && introPopupCanClose) {
+                if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ' || e.code === 'Space') {
+                    e.preventDefault();
+                    closeIntroPopup();
+                    return;
+                }
+            }
             if (e.key === 'Escape' || e.key === 'Enter') {
                 if (showDifficulty) setShowDifficulty(false);
                 if (showCredits) setShowCredits(false);
-                if (showIntroPopup && introPopupCanClose) closeIntroPopup();
             }
         };
 
         window.addEventListener('keydown', onKey);
 
         return () => window.removeEventListener('keydown', onKey);
-    }, [showDifficulty, showCredits, showIntroPopup, introPopupCanClose]);
+    }, [waypointPopup, setWaypointPopup, showDifficulty, showCredits, showIntroPopup, introPopupCanClose]);
 
     useEffect(() => {
         if (showDifficulty) {
@@ -554,6 +568,13 @@ const App = () => {
             setTimeout(() => playBtnRef.current?.focus(), 50);
         }
     }, [showDifficulty]);
+
+    useEffect(() => {
+        if (waypointPopup) {
+            const t = setTimeout(() => sampleContinueBtnRef.current?.focus(), 50);
+            return () => clearTimeout(t);
+        }
+    }, [waypointPopup]);
 
     const creditsOpenedOnce = useRef(false);
     useEffect(() => {
@@ -1166,7 +1187,7 @@ const App = () => {
                             {/* Obstacles (visual only) */}
                             {obstacles.map(o => (
                                 <a-entity key={o.id} position={`${o.x} ${o.y} ${o.z}`}>
-                                    <a-sphere radius={o.radius} color="#ff4d4d" material="transparent: true; opacity: 0.6" />
+                                    <a-sphere radius={o.radius} color="#ff4d4d" material="transparent: true; opacity: 0" />
                                 </a-entity>
                             ))}
 
@@ -1200,92 +1221,94 @@ const App = () => {
                                 id="rover"
                                 position="0 0 3.3"
                                 rotation="0 0 0"
-                                scale="0.25 0.25 0.25"
+                                scale="1.2 1.2 1.2"
                                 visible={roverReady ? "true" : "false"}
                             >
-                                {/* TREADS */}
+                                <a-gltf-model
+                                    src="./models/craft_racer.glb"
+                                    scale="0.2 0.2 0.2"
+                                ></a-gltf-model>
+
+                                {/* Original rover — saved as primitive A-Frame shapes
                                 <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="-0.25 -0.04 0"></a-box>
                                 <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="0.25 -0.04 0"></a-box>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 -0.2"></a-cylinder>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 0.2"></a-cylinder>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 -0.2"></a-cylinder>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 0.2"></a-cylinder>
-
-                                {/* BODY */}
                                 <a-box width="0.4" height="0.32" depth="0.36" color="#B8963E" position="0 0.14 0"></a-box>
                                 <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 -0.18"></a-box>
                                 <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 0.18"></a-box>
                                 <a-box width="0.42" height="0.02" depth="0.38" color="#9E8438" position="0 0.31 0"></a-box>
-
-                                {/* NECK */}
                                 <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04"></a-cylinder>
                                 <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04" rotation="0 0 6"></a-cylinder>
-
-                                {/* HEAD */}
                                 <a-box width="0.26" height="0.07" depth="0.07" color="#606060" position="0 0.52 -0.06"></a-box>
                                 <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="-0.08 0.52 -0.14"></a-cylinder>
                                 <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="0.08 0.52 -0.14"></a-cylinder>
                                 <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="-0.08 0.52 -0.21"></a-cylinder>
                                 <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="0.08 0.52 -0.21"></a-cylinder>
-
-                                {/* EYE LENSES */}
                                 <a-sphere radius="0.048" color="#6DB8D4" position="-0.08 0.52 -0.22"></a-sphere>
                                 <a-sphere radius="0.048" color="#6DB8D4" position="0.08 0.52 -0.22"></a-sphere>
                                 <a-sphere radius="0.025" color="#1A1A1A" position="-0.08 0.52 -0.25"></a-sphere>
                                 <a-sphere radius="0.025" color="#1A1A1A" position="0.08 0.52 -0.25"></a-sphere>
-
-                                {/* ARMS */}
                                 <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="-0.24 0.14 -0.14"></a-box>
                                 <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="0.24 0.14 -0.14"></a-box>
                                 <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="-0.24 0.14 -0.25"></a-box>
                                 <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="0.24 0.14 -0.25"></a-box>
-
-                                {/* SOLAR PANEL */}
                                 <a-box width="0.08" height="0.02" depth="0.2" color="#555555" position="0 0.33 0"></a-box>
+                                */}
                             </a-entity>
                         </a-scene>
                     </div>
 
                     <div id="ui-overlay" style={{ display: 'block' }}>
-                        <div id="score-display">
-                            SCORE <span id="score">{score}</span>
+                        <div className="hud-stack">
+                            {modeCfg.energyEnabled && (
+                                <div className="energy-display">
+                                    ENERGY
+                                    <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div>
+                                </div>
+                            )}
+                            <div id="score-display">
+                                SCORE <span id="score">{score}</span>
+                            </div>
+                            <div className="samples-display">
+                                SAMPLES <span className="samples-value">{samplesCollected}</span>
+                            </div>
                         </div>
-                        <div className="mode-ui">
-                            {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div></div>}
-                            <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
-                        </div>
-                        {/* WAYPOINT POPUP */}
-                        {waypointPopup && (
+                        {/* SAMPLE POPUP */}
+                        <div
+                            className={`sample-overlay ${waypointPopup ? 'open' : 'closed'}`}
+                            onClick={() => setWaypointPopup(null)}
+                        >
                             <div
-                                id="waypoint-popup"
+                                className="sample-modal"
+                                onClick={(e) => e.stopPropagation()}
                                 role="dialog"
                                 aria-modal="true"
-                                onClick={() => setWaypointPopup(null)}
+                                aria-hidden={!waypointPopup}
                             >
-                                <div
-                                    className="popup-container"
-                                    /* Closes the popup on click */
-                                    onClick={(e) => e.stopPropagation()}
-                                >
-
-                                    {waypointPopup.image && (
-                                        <div className="popup-image-panel">
-                                            <img src={waypointPopup.image} alt="Waypoint visual" />
-                                        </div>
-                                    )}
-
-                                    <div className="popup-text-panel">
-                                        <div className="waypoint-popup-title">{waypointPopup.title}</div>
-
-                                        {waypointPopup.body && (
-                                            <div className="waypoint-popup-body">{waypointPopup.body}</div>
-                                        )}
-
-                                        <div className="popup-hint">Click outside to close</div>
+                                {waypointPopup?.image && (
+                                    <div className="sample-image-panel">
+                                        <img src={waypointPopup.image} alt="Waypoint visual" />
                                     </div>
+                                )}
+                                <div className="sample-text-panel">
+                                    <h2 className="sample-title">{waypointPopup?.title}</h2>
+                                    {waypointPopup?.body && (
+                                        <p className="sample-body">{waypointPopup.body}</p>
+                                    )}
+                                    <button
+                                        ref={sampleContinueBtnRef}
+                                        className="sample-continue-btn"
+                                        onClick={() => setWaypointPopup(null)}
+                                    >
+                                        Continue
+                                    </button>
+                                    <div className="sample-hint">Press Space or click outside to continue</div>
                                 </div>
                             </div>
-                        )}
+                        </div>
                         {/* END SCREEN */}
                         {showEndScreen && (
                             <div className="end-overlay" role="dialog" aria-modal="true">
@@ -1354,7 +1377,7 @@ const App = () => {
                                         {introPopupCanClose ? 'Begin Mission' : 'Reading...'}
                                     </button>
                                     {introPopupCanClose && (
-                                        <p className="intro-dismiss-hint">Press Enter or click outside to dismiss</p>
+                                        <p className="intro-dismiss-hint">Press Space or click outside to continue</p>
                                     )}
                                 </div>
                             </div>
