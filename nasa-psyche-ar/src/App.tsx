@@ -131,12 +131,6 @@ const generateStars = (count: number) => {
 
 const STARS = generateStars(250);
 
-/** World-space directions for raycasting waypoint positions on the asteroid surface. */
-// const WAYPOINT_DIRECTIONS: [number, number, number][] = [
-//     [0.707, 0, 0.707], [-0.707, 0.2, 0.707], [0, 0.707, 0.707], [0, -0.707, 0.707],
-//     [0.707, 0.707, 0], [-0.707, 0.5, -0.5], [0, 0, -1], [0.5, -0.707, -0.5],
-// ];
-
 const INTRO_CONTENT: Record<string, { welcome: string; description: string }> = {
     easy: {
         welcome: 'Welcome to Story Mode',
@@ -161,6 +155,25 @@ const OBSTACLE_DIRECTIONS: [number, number, number, number][] = [
     [-3.5883, -0.1327, -.01, .35],
     [-0.4975, -0.5, 2.7357, 0.24],
     [-1.21, -1.4, 1.6656, 0.35],
+    [-2.5683, -1.06, 1.3699, 0.2],
+    [-2.5431, -1.3294, 0.7099, 0.25],
+    [-0.13, -1.88, -1.1987, 0.15],
+    [-1.5, -0.59, 2.498, 0.21],
+    [1.72, -0.72, 2.4154, 0.22],
+    [1.05, 2.58, 2.1314, 0.15],
+    [2.9039 , 0.4 , -2.0303, 0.25],
+    [0.66 , -1.76 , 1.8281 , 0.15],
+    [-1.13 , -0.92 , 2.3459 , 0.15],
+    [-2.4586 , 1.45 , -1.8348 , 0.24],
+    [0.835 , -0.66 , -2.8635 , 0.28],
+    [2.8161 , -1.215 , -0.1877 , 0.19],
+    [2.6203 , -1.15 , 0.5583 , 0.18],
+    [2.8735 , 0.14 , 1.709 , 0.15],
+    [-1.9249 , 2.27 , 1.6324 , 0.17],
+    [-2.9 , 1.88 , -0.514, 0.23],
+    [-1.335 , 1.97 , 2.3023 , 0.17],
+    [2.108 , -1.55 , -1.0963 , 0.17],
+    [2.9755 , 1.9092 , -1.0774 , 0.17],
 ];
 
 type SampleModel = 'crystal' | 'ore' | 'rock';
@@ -985,13 +998,6 @@ const App = () => {
     const [endReason, setEndReason] = useState<'complete' | 'energy'>('complete');
     const [energyBonus, setEnergyBonus] = useState(0);
 
-    // Centralized difficulty configuration placeholder.
-
-    // const difficultyConfig: Record<string, any> = {
-    //     easy: { spawnCount: 4, scoreMultiplier: 0.8 },
-    //     normal: { spawnCount: 6, scoreMultiplier: 1.0 },
-    //     hard: { spawnCount: 8, scoreMultiplier: 1.25 },
-    // };
     const [scanPrompt, setScanPrompt] = useState(true);
     const [meshLoaded, setMeshLoaded] = useState(false);
     const [roverReady, setRoverReady] = useState(false);
@@ -1012,6 +1018,7 @@ const App = () => {
     const arBtnRef = useRef<HTMLButtonElement | null>(null);
     const creditsBtnRef = useRef<HTMLButtonElement | null>(null);
     const diffBtnRefs = [useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null)];
+    const sampleContinueBtnRef = useRef<HTMLButtonElement | null>(null);
     const [waypointPopup, setWaypointPopup] = useState<{ title: string; body?: string; image?: string; } | null>(null);
 
     /** ---------- AR calibration + scale constants (pulled from calibrated AR build) ---------- */
@@ -1938,17 +1945,30 @@ const App = () => {
      */
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
+            if (waypointPopup) {
+                if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ' || e.code === 'Space') {
+                    e.preventDefault();
+                    setWaypointPopup(null);
+                    return;
+                }
+            }
+            if (showIntroPopup && introPopupCanClose) {
+                if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ' || e.code === 'Space') {
+                    e.preventDefault();
+                    closeIntroPopup();
+                    return;
+                }
+            }
             if (e.key === 'Escape' || e.key === 'Enter') {
                 if (showDifficulty) setShowDifficulty(false);
                 if (showCredits) setShowCredits(false);
-                if (showIntroPopup && introPopupCanClose) closeIntroPopup();
             }
         };
 
         window.addEventListener('keydown', onKey);
 
         return () => window.removeEventListener('keydown', onKey);
-    }, [showDifficulty, showCredits, showIntroPopup, introPopupCanClose]);
+    }, [waypointPopup, setWaypointPopup, showDifficulty, showCredits, showIntroPopup, introPopupCanClose]);
 
     useEffect(() => {
         if (showDifficulty) {
@@ -1959,6 +1979,13 @@ const App = () => {
             setTimeout(() => playBtnRef.current?.focus(), 50);
         }
     }, [showDifficulty]);
+
+    useEffect(() => {
+        if (waypointPopup) {
+            const t = setTimeout(() => sampleContinueBtnRef.current?.focus(), 50);
+            return () => clearTimeout(t);
+        }
+    }, [waypointPopup]);
 
     const creditsOpenedOnce = useRef(false);
     useEffect(() => {
@@ -2782,11 +2809,21 @@ const App = () => {
                             </section>
 
                             <section className="credits-section">
+                                <h3 className="credits-section-heading">Citations</h3>
+                                <ul className="credits-list">
+                                    <li>NASA JPL Psyche Press Kit: https://www.jpl.nasa.gov/press-kits/psyche/</li>
+                                    <li>Psyche Mission FAQ: https://psyche.ssl.berkeley.edu/mission/faq/</li>
+                                </ul>
+                            </section>
+
+                            <section className="credits-section">
                                 <h3 className="credits-section-heading">Disclaimer</h3>
                                 <p className="credits-disclaimer">
-                                    This work was created in partial fulfillment of University of Arkansas Capstone Course “CSCE 49603 - Capstone II″. The work is a result of the Psyche Student Collaborations component of NASA’s Psyche Mission (https://psyche.ssl.berkeley.edu)
-                                    “Psyche: A Journey to a Metal World” [Contract number NNM16AA09C] is part of the NASA Discovery Program mission to solar system targets. Trade names and trademarks of ASU and NASA are used in this work for identification only.
+                                    This work was created in partial fulfillment of University of Arkansas Capstone Course "CSCE 49603 - Capstone II". The work is a result of the Psyche Student Collaborations component of NASA's Psyche Mission (https://psyche.ssl.berkeley.edu)
+                                    "Psyche: A Journey to a Metal World" [Contract number NNM16AA09C] is part of the NASA Discovery Program mission to solar system targets. Trade names and trademarks of ASU and NASA are used in this work for identification only.
                                     Their usage does not constitute an official endorsement, either expressed or implied, by Arizona State University or National Aeronautics and Space Administration. The content is solely the responsibility of the authors and does not necessarily represent the official views of ASU or NASA.
+                                    <br />
+                                    The use of a rover on Psyche is not mission accurate and is included for gameplay purposes only.
                                 </p>
                             </section>
 
@@ -3753,7 +3790,12 @@ const App = () => {
                                 </a-entity>
                             ))}
 
-                            {/* Obstacles: logic in moveRover; red sphere visuals removed per user request. */}
+                            {/* Obstacles (visual only — collision still driven in move loop) */}
+                            {obstacles.map(o => (
+                                <a-entity key={o.id} position={`${o.x} ${o.y} ${o.z}`}>
+                                    <a-sphere radius={o.radius} color="#ff4d4d" material="transparent: true; opacity: 0" />
+                                </a-entity>
+                            ))}
 
                             {/* Sample indicator arrow — orbits rover in tangent plane toward nearest sample */}
                             <a-entity id="sample-arrow" visible="false">
@@ -3785,88 +3827,94 @@ const App = () => {
                                 id="rover"
                                 position="0 0 3.3"
                                 rotation="0 0 0"
-                                scale="0.25 0.25 0.25"
+                                scale="1.2 1.2 1.2"
                                 visible={roverReady ? "true" : "false"}
                             >
-                                {/* TREADS */}
+                                <a-gltf-model
+                                    src="./models/craft_racer.glb"
+                                    scale="0.2 0.2 0.2"
+                                ></a-gltf-model>
+
+                                {/* Original rover — saved as primitive A-Frame shapes
                                 <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="-0.25 -0.04 0"></a-box>
                                 <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="0.25 -0.04 0"></a-box>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 -0.2"></a-cylinder>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 0.2"></a-cylinder>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 -0.2"></a-cylinder>
                                 <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 0.2"></a-cylinder>
-
-                                {/* BODY */}
                                 <a-box width="0.4" height="0.32" depth="0.36" color="#B8963E" position="0 0.14 0"></a-box>
                                 <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 -0.18"></a-box>
                                 <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 0.18"></a-box>
                                 <a-box width="0.42" height="0.02" depth="0.38" color="#9E8438" position="0 0.31 0"></a-box>
-
-                                {/* NECK */}
                                 <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04"></a-cylinder>
                                 <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04" rotation="0 0 6"></a-cylinder>
-
-                                {/* HEAD */}
                                 <a-box width="0.26" height="0.07" depth="0.07" color="#606060" position="0 0.52 -0.06"></a-box>
                                 <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="-0.08 0.52 -0.14"></a-cylinder>
                                 <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="0.08 0.52 -0.14"></a-cylinder>
                                 <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="-0.08 0.52 -0.21"></a-cylinder>
                                 <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="0.08 0.52 -0.21"></a-cylinder>
-
-                                {/* EYE LENSES */}
                                 <a-sphere radius="0.048" color="#6DB8D4" position="-0.08 0.52 -0.22"></a-sphere>
                                 <a-sphere radius="0.048" color="#6DB8D4" position="0.08 0.52 -0.22"></a-sphere>
                                 <a-sphere radius="0.025" color="#1A1A1A" position="-0.08 0.52 -0.25"></a-sphere>
                                 <a-sphere radius="0.025" color="#1A1A1A" position="0.08 0.52 -0.25"></a-sphere>
-
-                                {/* ARMS */}
                                 <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="-0.24 0.14 -0.14"></a-box>
                                 <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="0.24 0.14 -0.14"></a-box>
                                 <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="-0.24 0.14 -0.25"></a-box>
                                 <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="0.24 0.14 -0.25"></a-box>
-
-                                {/* SOLAR PANEL */}
                                 <a-box width="0.08" height="0.02" depth="0.2" color="#555555" position="0 0.33 0"></a-box>
+                                */}
                             </a-entity>
                         </a-scene>
                     </div>
 
                     <div id="ui-overlay" style={{ display: 'block' }}>
-                        <div id="score-display">
-                            SCORE <span id="score">{score}</span>
+                        <div className="hud-stack">
+                            {modeCfg.energyEnabled && (
+                                <div className="energy-display">
+                                    ENERGY
+                                    <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div>
+                                </div>
+                            )}
+                            <div id="score-display">
+                                SCORE <span id="score">{score}</span>
+                            </div>
+                            <div className="samples-display">
+                                SAMPLES <span className="samples-value">{samplesCollected}</span>
+                            </div>
                         </div>
-                        <div className="mode-ui">
-                            {modeCfg.energyEnabled && <div className="energy-display">ENERGY <div className="energy-bar"><div style={{ width: `${(energy / MAX_ENERGY) * 100}%` }} /></div></div>}
-                            <div className="samples-display">SAMPLES <span style={{ color: '#7bffb2', fontWeight: 800 }}>{samplesCollected}</span></div>
-                        </div>
-                        {/* WAYPOINT POPUP */}
-                        {waypointPopup && (
+                        {/* SAMPLE POPUP */}
+                        <div
+                            className={`sample-overlay ${waypointPopup ? 'open' : 'closed'}`}
+                            onClick={() => setWaypointPopup(null)}
+                        >
                             <div
-                                id="waypoint-popup"
+                                className="sample-modal"
+                                onClick={(e) => e.stopPropagation()}
                                 role="dialog"
                                 aria-modal="true"
-                                onClick={() => setWaypointPopup(null)}
+                                aria-hidden={!waypointPopup}
                             >
-                                <div className="popup-container">
-
-                                    {waypointPopup.image && (
-                                        <div className="popup-image-panel">
-                                            <img src={waypointPopup.image} alt="Waypoint visual" />
-                                        </div>
-                                    )}
-
-                                    <div className="popup-text-panel">
-                                        <div className="waypoint-popup-title">{waypointPopup.title}</div>
-
-                                        {waypointPopup.body && (
-                                            <div className="waypoint-popup-body">{waypointPopup.body}</div>
-                                        )}
-
-                                        <div className="popup-hint">Tap anywhere to close</div>
+                                {waypointPopup?.image && (
+                                    <div className="sample-image-panel">
+                                        <img src={waypointPopup.image} alt="Waypoint visual" />
                                     </div>
+                                )}
+                                <div className="sample-text-panel">
+                                    <h2 className="sample-title">{waypointPopup?.title}</h2>
+                                    {waypointPopup?.body && (
+                                        <p className="sample-body">{waypointPopup.body}</p>
+                                    )}
+                                    <button
+                                        ref={sampleContinueBtnRef}
+                                        className="sample-continue-btn"
+                                        onClick={() => setWaypointPopup(null)}
+                                    >
+                                        Continue
+                                    </button>
+                                    <div className="sample-hint">Press Space or click outside to continue</div>
                                 </div>
                             </div>
-                        )}
+                        </div>
                         {/* END SCREEN */}
                         {showEndScreen && (
                             <div className="end-overlay" role="dialog" aria-modal="true">
@@ -3935,7 +3983,7 @@ const App = () => {
                                         {introPopupCanClose ? 'Begin Mission' : 'Reading...'}
                                     </button>
                                     {introPopupCanClose && (
-                                        <p className="intro-dismiss-hint">Press Enter or tap anywhere to dismiss</p>
+                                        <p className="intro-dismiss-hint">Press Space or click outside to continue</p>
                                     )}
                                 </div>
                             </div>
