@@ -1014,9 +1014,6 @@ const App = () => {
     const diffBtnRefs = [useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null), useRef<HTMLButtonElement | null>(null)];
     const [waypointPopup, setWaypointPopup] = useState<{ title: string; body?: string; image?: string; } | null>(null);
 
-    /** When true, the difficulty picker will launch the AR Experience instead of the web game. */
-    const [launchInAr, setLaunchInAr] = useState(false);
-
     /** ---------- AR calibration + scale constants (pulled from calibrated AR build) ---------- */
     const [centerOffsetsById, setCenterOffsetsById] = useState<Record<number, MarkerOffset>>({});
     const [arVisibleIds, setArVisibleIds] = useState<Set<number>>(new Set());
@@ -1471,7 +1468,6 @@ const App = () => {
         endTriggeredRef.current = false;
         setEnergyBonus(0);
         popupIndexRef.current = 0;
-        setLaunchInAr(false);
         setArAnchorId(null);
         setArVisibleIds(new Set());
         roverPosRef.current = null;
@@ -2729,22 +2725,18 @@ const App = () => {
                     <h1>Psyche</h1>
                     <p className="subtitle">Explore • Navigate • Discover</p>
                     <div className="button-container">
-                        <button id="play-button" ref={playBtnRef} onClick={() => { setLaunchInAr(false); setShowDifficulty(true); }} disabled={!meshLoaded}>
+                        <button id="play-button" ref={playBtnRef} onClick={() => { setShowDifficulty(true); }} disabled={!meshLoaded}>
                             {meshLoaded ? 'Launch Mission' : 'Loading...'}
                         </button>
-                        <button id="start-button" ref={arBtnRef} onClick={() => { setLaunchInAr(true); setShowDifficulty(true); }} disabled={!meshLoaded}>
+                        <button id="start-button" ref={arBtnRef} onClick={() => { if (meshLoaded) void handleStart('ar', 'easy'); }} disabled={!meshLoaded}>
                             {meshLoaded ? 'AR Experience' : 'Loading...'}
                         </button>
                         <button id="credits-button" ref={creditsBtnRef} onClick={() => setShowCredits(true)}>Credits</button>
                     </div>
                     <div className={`difficulty-overlay ${showDifficulty ? 'open' : 'closed'}`} onClick={() => setShowDifficulty(false)}>
                         <div className="difficulty-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-hidden={!showDifficulty}>
-                            <h2 className="difficulty-title">{launchInAr ? 'AR Experience — Select Difficulty' : 'Select Difficulty'}</h2>
-                            <p className="difficulty-sub">
-                                {launchInAr
-                                    ? 'Point your camera at the printed markers to anchor the asteroid on your table.'
-                                    : 'Choose how challenging the mission will be.'}
-                            </p>
+                            <h2 className="difficulty-title">Select Difficulty</h2>
+                            <p className="difficulty-sub">Choose how challenging the mission will be.</p>
 
                             <div className="difficulty-buttons" onKeyDown={(e) => {
                                 // Trap Tab navigation between the three difficulty buttons
@@ -2759,9 +2751,9 @@ const App = () => {
                                     refs[next].current?.focus();
                                 }
                             }}>
-                                <button ref={diffBtnRefs[0]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart(launchInAr ? 'ar' : 'web_game', 'easy'); }}>Story</button>
-                                <button ref={diffBtnRefs[1]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart(launchInAr ? 'ar' : 'web_game', 'normal'); }}>Standard</button>
-                                <button ref={diffBtnRefs[2]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); handleStart(launchInAr ? 'ar' : 'web_game', 'hard'); }}>Challenge</button>
+                                <button ref={diffBtnRefs[0]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); void handleStart('web_game', 'easy'); }}>Story</button>
+                                <button ref={diffBtnRefs[1]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); void handleStart('web_game', 'normal'); }}>Standard</button>
+                                <button ref={diffBtnRefs[2]} className="difficulty-btn" onClick={() => { setShowDifficulty(false); void handleStart('web_game', 'hard'); }}>Challenge</button>
                             </div>
                         </div>
                     </div>
@@ -3569,7 +3561,7 @@ const App = () => {
                                 aria-modal="true"
                                 onClick={() => setWaypointPopup(null)}
                             >
-                                <div className="popup-container" onClick={(e) => e.stopPropagation()}>
+                                <div className="popup-container">
                                     {waypointPopup.image && (
                                         <div className="popup-image-panel">
                                             <img src={waypointPopup.image} alt="Waypoint visual" />
@@ -3580,7 +3572,7 @@ const App = () => {
                                         {waypointPopup.body && (
                                             <div className="waypoint-popup-body">{waypointPopup.body}</div>
                                         )}
-                                        <div className="popup-hint">Click outside to close</div>
+                                        <div className="popup-hint">Tap anywhere to close</div>
                                     </div>
                                 </div>
                             </div>
@@ -3629,7 +3621,7 @@ const App = () => {
                                 role="dialog"
                                 aria-modal="true"
                             >
-                                <div className="intro-modal" onClick={(e) => e.stopPropagation()}>
+                                <div className="intro-modal">
                                     <h2 className="intro-title">{INTRO_CONTENT[difficulty].welcome}</h2>
                                     <div className="intro-section">
                                         <h3 className="intro-section-heading">Controls</h3>
@@ -3647,13 +3639,13 @@ const App = () => {
                                     </div>
                                     <button
                                         className={`intro-close-btn${introPopupCanClose ? '' : ' locked'}`}
-                                        onClick={() => { if (introPopupCanClose) closeIntroPopup(); }}
+                                        onClick={(e) => { e.stopPropagation(); if (introPopupCanClose) closeIntroPopup(); }}
                                         disabled={!introPopupCanClose}
                                     >
                                         {introPopupCanClose ? 'Begin Mission' : 'Reading...'}
                                     </button>
                                     {introPopupCanClose && (
-                                        <p className="intro-dismiss-hint">Press Enter or click outside to dismiss</p>
+                                        <p className="intro-dismiss-hint">Press Enter or tap anywhere to dismiss</p>
                                     )}
                                 </div>
                             </div>
@@ -3855,11 +3847,7 @@ const App = () => {
                                 aria-modal="true"
                                 onClick={() => setWaypointPopup(null)}
                             >
-                                <div
-                                    className="popup-container"
-                                    /* Closes the popup on click */
-                                    onClick={(e) => e.stopPropagation()}
-                                >
+                                <div className="popup-container">
 
                                     {waypointPopup.image && (
                                         <div className="popup-image-panel">
@@ -3874,7 +3862,7 @@ const App = () => {
                                             <div className="waypoint-popup-body">{waypointPopup.body}</div>
                                         )}
 
-                                        <div className="popup-hint">Click outside to close</div>
+                                        <div className="popup-hint">Tap anywhere to close</div>
                                     </div>
                                 </div>
                             </div>
@@ -3923,7 +3911,7 @@ const App = () => {
                                 role="dialog"
                                 aria-modal="true"
                             >
-                                <div className="intro-modal" onClick={(e) => e.stopPropagation()}>
+                                <div className="intro-modal">
                                     <h2 className="intro-title">{INTRO_CONTENT[difficulty].welcome}</h2>
 
                                     <div className="intro-section">
@@ -3941,13 +3929,13 @@ const App = () => {
 
                                     <button
                                         className={`intro-close-btn${introPopupCanClose ? '' : ' locked'}`}
-                                        onClick={() => { if (introPopupCanClose) closeIntroPopup(); }}
+                                        onClick={(e) => { e.stopPropagation(); if (introPopupCanClose) closeIntroPopup(); }}
                                         disabled={!introPopupCanClose}
                                     >
                                         {introPopupCanClose ? 'Begin Mission' : 'Reading...'}
                                     </button>
                                     {introPopupCanClose && (
-                                        <p className="intro-dismiss-hint">Press Enter or click outside to dismiss</p>
+                                        <p className="intro-dismiss-hint">Press Enter or tap anywhere to dismiss</p>
                                     )}
                                 </div>
                             </div>
