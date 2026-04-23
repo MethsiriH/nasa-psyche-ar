@@ -1,14 +1,29 @@
 <!doctype html>
-<!-- App shell: A-Frame + MindAR for AR; React mounts into #root. -->
+<!-- App shell: A-Frame + AR.js; React mounts into #root.
+     ARToolKit C API (native) vs AR.js a-scene arjs= attribute:
+       arSetPatternDetectionMode(h, AR_MATRIX_CODE_DETECTION)
+         → detectionMode: mono_and_matrix (template + matrix; matrix uses AR_MATRIX_CODE_*)
+       arSetMatrixCodeType(h, AR_MATRIX_CODE_3x3_HAMMING63)
+         → matrixCodeType: 3x3_HAMMING63
+       arSetBorderSize(h, 0.24)  [border width per side as fraction of full marker width]
+         → patternRatio: 0.52  (inner pattern = 1 − 2×border; jsartoolkit setPattRatio)
+     labelingMode: black_region matches black-bordered markers on white (default).
+-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NASA Psyche AR</title>
-    <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-    <script type="module" crossorigin src="/psyche-ar-game/assets/index-BzcbRNMw.js"></script>
-    <link rel="stylesheet" crossorigin href="/psyche-ar-game/assets/index-Cbrg2x_J.css">
+    <script src="/nasa-psyche-ar/vendor/aframe.min.js"></script>
+    <script src="/nasa-psyche-ar/vendor/aframe-ar.js"></script>
+    <!--
+      OpenCV.js — used client-side to detect the gray silhouette of the 3D-printed asteroid in the
+      AR camera feed. We load it async so the UI can mount first, then wire `cv.onRuntimeInitialized`
+      when it's ready. File served from public/vendor/opencv.js so builds are fully offline.
+    -->
+    <script async src="/nasa-psyche-ar/vendor/opencv.js"></script>
+    <script type="module" crossorigin src="/nasa-psyche-ar/assets/index-CSN_gJAE.js"></script>
+    <link rel="stylesheet" crossorigin href="/nasa-psyche-ar/assets/index-BMH3rQGA.css">
   </head>
   <body>
     <div id="root"></div>
