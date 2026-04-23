@@ -3725,7 +3725,7 @@ const App = () => {
                                 ))}
                             </a-entity>
 
-                            {/* VISUAL ASTEROID */}
+                            {/* VISUAL ASTEROID (web only — AR still uses AsteroidPsyche_Collision.glb on marker) */}
                             <a-entity
                                 id="asteroid"
                                 position="0 0 0"
@@ -3733,7 +3733,7 @@ const App = () => {
                             >
                                 <a-gltf-model
                                     id="asteroid-model"
-                                    src="./models/AsteroidPsyche.glb"
+                                    src="./models/AsteroidPsyche1.glb"
                                     scale="2.5 2.5 2.5"
                                     position="-3.75 -2.2 3.22"
                                 ></a-gltf-model>
