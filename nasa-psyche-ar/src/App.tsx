@@ -36,6 +36,13 @@ const AR_FLAT_PLAY_INNER_RADIUS_FR = 0.72;
  * hovering slightly above the displaced mesh.
  */
 const AR_FLAT_SURFACE_Y_SINK = 0.022;
+/** Flat AR: rover GLB + collection / arrow sizing vs the prior baseline (same craft as web). */
+const AR_ROVER_SCALE_MULTIPLIER = 5;
+/**
+ * Flat AR: place samples and obstacles within this physical radius (meters) of the rover
+ * (disk center on the scanned surface). 10 in ≈ 0.254 m; divided by MARKER_SIZE_METERS for marker units.
+ */
+const AR_FLAT_SPAWN_CLUSTER_RADIUS_M = 10 * 0.0254;
 /** Deterministic initial rover spawn direction in asteroid-local space for AR. */
 const AR_ROVER_START_DIRECTION: [number, number, number] = [0, 1, 0];
 
@@ -1399,21 +1406,21 @@ const App = () => {
     const AR_ARROW_NORMAL_OFFSET_FR = 0.02;
     const AR_COLLECTION_RADIUS_FR = 0.125;
     const AR_ROVER_SURFACE_OFFSET_FR = 0.03;
-    // 0.625 × 1.5 — larger rover on the print while staying smaller than the original 1.25 baseline.
-    const AR_ROVER_DESIRED_SCALE_FR = 0.9375;
+    // Baseline 0.625 × 1.5, then × AR_ROVER_SCALE_MULTIPLIER for on-print size.
+    const AR_ROVER_DESIRED_SCALE_FR = 0.9375 * AR_ROVER_SCALE_MULTIPLIER;
 
     const arSampleScale = markerOverlaySize * AR_SAMPLE_SCALE_FR;
     const arSampleScaleStr = `${arSampleScale} ${arSampleScale} ${arSampleScale}`;
-    const arArrowConeHeight = markerOverlaySize * AR_ARROW_CONE_HEIGHT_FR;
-    const arArrowConeRadiusBottom = markerOverlaySize * AR_ARROW_CONE_RADIUS_FR;
-    const arArrowCylRadius = markerOverlaySize * AR_ARROW_CYL_RADIUS_FR;
-    const arArrowCylHeight = markerOverlaySize * AR_ARROW_CYL_HEIGHT_FR;
-    const arArrowConeY = markerOverlaySize * AR_ARROW_CONE_OFFSET_Y_FR;
-    const arArrowCylY = markerOverlaySize * AR_ARROW_CYL_OFFSET_Y_FR;
-    const arArrowOrbitRadius = markerOverlayWidth * AR_ARROW_ORBIT_RADIUS_FR;
-    const arArrowNormalOffset = markerOverlaySize * AR_ARROW_NORMAL_OFFSET_FR;
-    const arCollectionRadius = markerOverlaySize * AR_COLLECTION_RADIUS_FR;
-    const arSurfaceOffset = markerOverlaySize * AR_ROVER_SURFACE_OFFSET_FR;
+    const arArrowConeHeight = markerOverlaySize * AR_ARROW_CONE_HEIGHT_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arArrowConeRadiusBottom = markerOverlaySize * AR_ARROW_CONE_RADIUS_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arArrowCylRadius = markerOverlaySize * AR_ARROW_CYL_RADIUS_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arArrowCylHeight = markerOverlaySize * AR_ARROW_CYL_HEIGHT_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arArrowConeY = markerOverlaySize * AR_ARROW_CONE_OFFSET_Y_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arArrowCylY = markerOverlaySize * AR_ARROW_CYL_OFFSET_Y_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arArrowOrbitRadius = markerOverlayWidth * AR_ARROW_ORBIT_RADIUS_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arArrowNormalOffset = markerOverlaySize * AR_ARROW_NORMAL_OFFSET_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arCollectionRadius = markerOverlaySize * AR_COLLECTION_RADIUS_FR * AR_ROVER_SCALE_MULTIPLIER;
+    const arSurfaceOffset = markerOverlaySize * AR_ROVER_SURFACE_OFFSET_FR * AR_ROVER_SCALE_MULTIPLIER;
     const arRoverDesiredScale = markerOverlaySize * AR_ROVER_DESIRED_SCALE_FR;
     // Compensate rover scale so it renders at a consistent world size regardless of the parent's non-uniform scale.
     const arRoverScaleStr = `${arRoverDesiredScale / modelScaleX} ${arRoverDesiredScale / modelScaleY} ${arRoverDesiredScale / modelScaleZ}`;
@@ -2157,7 +2164,9 @@ const App = () => {
                 // around an invisible back side. Web game still uses the full 3D mesh physics.
                 const flatAr = gameState === 'AR_MODE' && flatSurfaceMode;
                 const diskRadius = flatSurfaceRadius;
-                const playRadius = diskRadius * AR_FLAT_PLAY_INNER_RADIUS_FR;
+                /** Cap spawn spread so props stay within ~10\" of the rover on the scanned disk. */
+                const clusterRadiusMarker = AR_FLAT_SPAWN_CLUSTER_RADIUS_M / MARKER_SIZE_METERS;
+                const playRadius = Math.min(diskRadius * AR_FLAT_PLAY_INNER_RADIUS_FR, clusterRadiusMarker);
                 const diskHeight = flatSurfaceHeight;
                 const diskOffsetX = flatSurfaceOffsetX;
                 const diskOffsetZ = flatSurfaceOffsetZ;
@@ -2747,7 +2756,7 @@ const App = () => {
                     </div>
 
                     <div className="mission-badge">
-                        <div className="badge-label">NASA Capstone Project2023</div>
+                        <div className="badge-label">NASA Capstone Project</div>
                     </div>
                     <h1>Psyche</h1>
                     <p className="subtitle">Explore • Navigate • Discover</p>
@@ -2972,9 +2981,8 @@ const App = () => {
                                                         </a-entity>
                                                     </a-entity>
 
-                                                    {/* Rover — identical primitive-built mesh used in the web game; compensates for non-uniform parent scale.
-                                                        In flat mode we hide it until the tap-to-map setup finishes so the player sees
-                                                        the empty gray surface with just the tap pins, then the rover + crystals appear. */}
+                                                    {/* Rover — same GLB as web (`craft_racer.glb`); parent scale compensates for non-uniform marker transform.
+                                                        In flat mode we hide it until tap-to-map completes so the player sees the gray surface first. */}
                                                     <a-entity
                                                         id="ar-rover"
                                                         position="0 0 0"
@@ -2991,32 +2999,10 @@ const App = () => {
                                                                 position="0 0 0"
                                                             />
                                                         )}
-                                                        <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="-0.25 -0.04 0"></a-box>
-                                                        <a-box width="0.1" height="0.16" depth="0.52" color="#2A2A2A" position="0.25 -0.04 0"></a-box>
-                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 -0.2"></a-cylinder>
-                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="-0.25 -0.04 0.2"></a-cylinder>
-                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 -0.2"></a-cylinder>
-                                                        <a-cylinder radius="0.08" height="0.1" rotation="0 0 90" color="#3A3A3A" position="0.25 -0.04 0.2"></a-cylinder>
-                                                        <a-box width="0.4" height="0.32" depth="0.36" color="#B8963E" position="0 0.14 0"></a-box>
-                                                        <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 -0.18"></a-box>
-                                                        <a-box width="0.38" height="0.28" depth="0.01" color="#8B7230" position="0 0.15 0.18"></a-box>
-                                                        <a-box width="0.42" height="0.02" depth="0.38" color="#9E8438" position="0 0.31 0"></a-box>
-                                                        <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04"></a-cylinder>
-                                                        <a-cylinder radius="0.025" height="0.18" color="#707070" position="0 0.41 -0.04" rotation="0 0 6"></a-cylinder>
-                                                        <a-box width="0.26" height="0.07" depth="0.07" color="#606060" position="0 0.52 -0.06"></a-box>
-                                                        <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="-0.08 0.52 -0.14"></a-cylinder>
-                                                        <a-cylinder radius="0.055" height="0.14" rotation="90 0 0" color="#505050" position="0.08 0.52 -0.14"></a-cylinder>
-                                                        <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="-0.08 0.52 -0.21"></a-cylinder>
-                                                        <a-cylinder radius="0.058" height="0.02" rotation="90 0 0" color="#404040" position="0.08 0.52 -0.21"></a-cylinder>
-                                                        <a-sphere radius="0.048" color="#6DB8D4" position="-0.08 0.52 -0.22"></a-sphere>
-                                                        <a-sphere radius="0.048" color="#6DB8D4" position="0.08 0.52 -0.22"></a-sphere>
-                                                        <a-sphere radius="0.025" color="#1A1A1A" position="-0.08 0.52 -0.25"></a-sphere>
-                                                        <a-sphere radius="0.025" color="#1A1A1A" position="0.08 0.52 -0.25"></a-sphere>
-                                                        <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="-0.24 0.14 -0.14"></a-box>
-                                                        <a-box width="0.035" height="0.035" depth="0.18" color="#707070" rotation="15 0 0" position="0.24 0.14 -0.14"></a-box>
-                                                        <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="-0.24 0.14 -0.25"></a-box>
-                                                        <a-box width="0.06" height="0.02" depth="0.06" color="#606060" rotation="15 0 0" position="0.24 0.14 -0.25"></a-box>
-                                                        <a-box width="0.08" height="0.02" depth="0.2" color="#555555" position="0 0.33 0"></a-box>
+                                                        <a-gltf-model
+                                                            src="./models/craft_racer.glb"
+                                                            scale="0.2 0.2 0.2"
+                                                        />
                                                     </a-entity>
                                                 </a-entity>
                                             </a-entity>
@@ -3590,30 +3576,41 @@ const App = () => {
                             </div>
                         )}
 
-                        {/* Sample-collected popup (shared with web game) */}
-                        {waypointPopup && (
+                        {/* Mission info popup — same overlay/modal as web so CSS (max width, scroll, z-index) applies in AR. */}
+                        <div
+                            className={`sample-overlay ${waypointPopup ? 'open' : 'closed'}`}
+                            onClick={() => setWaypointPopup(null)}
+                            role="presentation"
+                        >
                             <div
-                                id="waypoint-popup"
+                                className="sample-modal"
+                                onClick={(e) => e.stopPropagation()}
                                 role="dialog"
                                 aria-modal="true"
-                                onClick={() => setWaypointPopup(null)}
+                                aria-hidden={!waypointPopup}
                             >
-                                <div className="popup-container">
-                                    {waypointPopup.image && (
-                                        <div className="popup-image-panel">
-                                            <img src={waypointPopup.image} alt="Waypoint visual" />
-                                        </div>
-                                    )}
-                                    <div className="popup-text-panel">
-                                        <div className="waypoint-popup-title">{waypointPopup.title}</div>
-                                        {waypointPopup.body && (
-                                            <div className="waypoint-popup-body">{waypointPopup.body}</div>
-                                        )}
-                                        <div className="popup-hint">Tap anywhere to close</div>
+                                {waypointPopup?.image && (
+                                    <div className="sample-image-panel">
+                                        <img src={waypointPopup.image} alt="" />
                                     </div>
+                                )}
+                                <div className="sample-text-panel">
+                                    <h2 className="sample-title">{waypointPopup?.title}</h2>
+                                    {waypointPopup?.body && (
+                                        <p className="sample-body">{waypointPopup.body}</p>
+                                    )}
+                                    <button
+                                        type="button"
+                                        ref={sampleContinueBtnRef}
+                                        className="sample-continue-btn"
+                                        onClick={() => setWaypointPopup(null)}
+                                    >
+                                        Continue
+                                    </button>
+                                    <div className="sample-hint">Tap outside or Continue to close</div>
                                 </div>
                             </div>
-                        )}
+                        </div>
 
                         {/* End screen */}
                         {showEndScreen && (
