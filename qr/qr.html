@@ -183,8 +183,11 @@
       .marker-card h2 { color: #000; font-size: 14pt; }
       .marker-card .composite-wrap {
         padding: 0;
-        transform: scale(1.05);
-        transform-origin: center;
+      }
+      .marker-card .composite-wrap canvas {
+        width: 2in !important;
+        height: 2in !important;
+        max-width: 2in !important;
       }
     }
   </style>
@@ -197,8 +200,11 @@
     <ol style="padding-left:1.25rem; margin:0; line-height:1.7;">
       <li><strong>Game URL</strong> — Paste the full address of your deployed app (the link the QR code should open). Use <code>https://</code> and include a trailing slash if your host expects it.</li>
       <li><strong>Marker images base</strong> — Paste the folder URL where the marker PNGs live (must end with <code>3x3_hamming_6_3/</code> on your server). Example: <code>https://&lt;user&gt;.github.io/nasa-psyche-ar/assets/3x3_hamming_6_3/</code></li>
-      <li>Click <strong>Regenerate all</strong>, then <strong>Print all sheets</strong> or use <strong>Save PNG</strong> on each card. Scan the <strong>QR</strong> only, not the marker. Empty split areas use the built-in background pattern automatically.</li>
+      <li>Click <strong>Regenerate all</strong> (sheets are generated at high pixel resolution), then <strong>Print all sheets</strong> or <strong>Save PNG</strong> per card. Scan the <strong>QR</strong> only, not the marker.</li>
     </ol>
+    <p style="margin:0.85rem 0 0; padding-top:0.85rem; border-top:1px solid #30363d; line-height:1.65;">
+      <strong>Print at 2 in × 2 in (50.8 mm × 50.8 mm).</strong> The AR app expects the printed marker at about that physical size. In your print dialog choose <strong>100% / actual size</strong> (not &ldquo;fit to page&rdquo; if it shrinks the square). If you use <strong>Save PNG</strong>, open the file and set width and height to exactly <strong>2 inches</strong> (or set a custom paper / crop to a 2&Prime; square). Each browser print page here sizes the square to <strong>2&Prime; × 2&Prime;</strong> when you print from this page.
+    </p>
   </div>
 
   <div class="controls">
@@ -232,12 +238,19 @@
     const HARDCODED_ASSET_BASE = 'https://methsirih.github.io/nasa-psyche-ar/assets/3x3_hamming_6_3/';
     const HARDCODED_LAYOUT = 'split';
     const HARDCODED_MARKER_PCT = 80;
-    const OVERLAY_QR_SIZE = 640;
-    const SHEET_SIZE = 1000;
-    const SHEET_PAD = 22;
+    /** Logical layout was tuned at 1000 px; scale all margins / QR mins for print quality. */
+    const SHEET_REF = 1000;
+    const SHEET_PIXELS = 2400;
+    const LAYOUT_SCALE = SHEET_PIXELS / SHEET_REF;
+    const SHEET_SIZE = SHEET_PIXELS;
+    const SHEET_PAD = Math.round(22 * LAYOUT_SCALE);
+    const SPLIT_CELL_PAD = Math.round(10 * LAYOUT_SCALE);
+    const SPLIT_MIN_QR_PX = Math.round(120 * LAYOUT_SCALE);
+    const AROUND_QR_MIN = Math.round(120 * LAYOUT_SCALE);
+    const AROUND_QR_MAX = Math.round(240 * LAYOUT_SCALE);
+    const AROUND_M_STEP = Math.round(12 * LAYOUT_SCALE);
+    const OVERLAY_QR_SIZE = Math.round(640 * LAYOUT_SCALE);
     const QUIET_RING_FR = 0.018;
-    const SPLIT_CELL_PAD = 10;
-    const SPLIT_MIN_QR_PX = 120;
 
     const input = document.getElementById('url-input');
     const assetBaseInput = document.getElementById('asset-base');
@@ -265,6 +278,11 @@
 
     function setStatus(msg) {
       statusEl.textContent = msg || '';
+    }
+
+    function applyHighQualityCanvas(ctx) {
+      ctx.imageSmoothingEnabled = true;
+      if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
     }
 
     function loadImage(src) {
@@ -459,7 +477,7 @@
           height: pixelSize,
           correctLevel: correctLevel,
         });
-        return await waitForQr(temp, 60);
+        return await waitForQr(temp, 120);
       } finally {
         temp.remove();
       }
@@ -485,6 +503,7 @@
       out.width = S;
       out.height = S;
       const ctx = out.getContext('2d');
+      applyHighQualityCanvas(ctx);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, S, S);
 
@@ -505,11 +524,11 @@
       const PAD = SHEET_PAD;
       let M = Math.round(S * getMarkerSizeFr());
       let qrS = Math.floor((S - M) / 2 - PAD * 2);
-      while (qrS < 120 && M > S * 0.22) {
-        M -= 12;
+      while (qrS < AROUND_QR_MIN && M > S * 0.22) {
+        M -= AROUND_M_STEP;
         qrS = Math.floor((S - M) / 2 - PAD * 2);
       }
-      qrS = Math.max(120, Math.min(240, qrS));
+      qrS = Math.max(AROUND_QR_MIN, Math.min(AROUND_QR_MAX, qrS));
 
       const qrBmp = await renderQrToCanvas(url, qrS, QRCode.CorrectLevel.M);
       const markerImg = await loadImage(markerPngUrl(markerId));
@@ -518,6 +537,7 @@
       out.width = S;
       out.height = S;
       const ctx = out.getContext('2d');
+      applyHighQualityCanvas(ctx);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, S, S);
 
@@ -543,6 +563,7 @@
       out.width = qrBmp.width;
       out.height = qrBmp.height;
       const ctx = out.getContext('2d');
+      applyHighQualityCanvas(ctx);
       ctx.drawImage(qrBmp, 0, 0);
 
       const w = out.width;
@@ -619,7 +640,15 @@
 
       btnRegen.disabled = false;
       btnPrint.disabled = false;
-      setStatus('Done — four sheets (markers 1–4), split tile, ' + HARDCODED_MARKER_PCT + '% block.');
+      setStatus(
+        'Done — ' +
+          SHEET_SIZE +
+          '×' +
+          SHEET_SIZE +
+          ' px PNGs (markers 1–4), split tile, ' +
+          HARDCODED_MARKER_PCT +
+          '% block. Print each square at 2″×2″.'
+      );
     }
 
     input.addEventListener('change', () => {
