@@ -195,7 +195,7 @@
     <ul style="padding-left:1.1rem; margin-top:0.35rem;">
       <li>Paste your <strong>game URL</strong> (same for every marker).</li>
       <li>Marker images load from the project path <code>public/assets/3x3_hamming_6_3/</code> &mdash; on GitHub Pages that is <code>…/nasa-psyche-ar/assets/3x3_hamming_6_3/{id}.png</code>.</li>
-      <li>Each tile uses <strong>high error correction</strong> and a <strong>centered marker</strong> on a white pad. The marker is kept to <strong>~35% of the QR width</strong> so phones can still read the URL — covering most of the code (e.g. 80%) usually <strong>will not scan</strong>.</li>
+      <li>Each tile uses <strong>high error correction</strong> and a <strong>centered marker</strong> on a white pad. The marker is drawn at <strong>~60% of the QR width</strong>; very long URLs or weak cameras may need a shorter link or a slightly smaller marker if scans fail.</li>
       <li>Use <strong>Regenerate</strong> after changing the URL or asset path. <strong>Print</strong> prints one sheet per marker.</li>
     </ul>
   </div>
@@ -222,11 +222,8 @@
     const MARKER_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
     /** Larger canvas keeps modules readable alongside a centered marker. */
     const QR_SIZE = 640;
-    /**
-     * Marker image side / QR canvas width. ~0.30–0.38 is a typical safe range with level-H; 0.80
-     * covers too many modules and scanners usually fail.
-     */
-    const MARKER_SIZE_FR = 0.35;
+    /** Marker image side / QR canvas width (0.60 = 60%). Level-H helps; shorten URL if scans fail. */
+    const MARKER_SIZE_FR = 0.60;
     /** White quiet ring around the marker (fraction of QR width, each side). */
     const QUIET_RING_FR = 0.018;
 
