@@ -1,4 +1,8 @@
 <!DOCTYPE html>
+<!--
+  EDIT THIS FILE ONLY — path: nasa-psyche-ar/qr/qr.html (inside the Vite app, next to src/).
+  Do not edit dist/qr/qr.html by hand; `npm run build` copies this qr/ folder into dist/qr/.
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -669,7 +673,7 @@
       const qrCard = document.createElement('div');
       qrCard.className = 'marker-card marker-card--qr-only';
       qrCard.innerHTML =
-        '<h2>QR only (no marker)</h2><div class="composite-wrap"></div><button type="button" class="save-one">Save PNG</button>';
+        '<h2>QR Code</h2><div class="composite-wrap"></div><button type="button" class="save-one">Save PNG</button>';
       grid.appendChild(qrCard);
       const qrWrap = qrCard.querySelector('.composite-wrap');
       const qrSave = qrCard.querySelector('.save-one');
