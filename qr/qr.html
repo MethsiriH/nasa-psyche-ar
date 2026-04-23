@@ -201,7 +201,7 @@
       <li><strong>Around marker:</strong> marker centered; the same URL in <strong>four corner QRs</strong>.</li>
       <li><strong>Overlay:</strong> one large QR with the marker drawn on top in the middle (limited % so it still scans).</li>
       <li>Marker PNGs: <code>public/assets/3x3_hamming_6_3/{id}.png</code> (on Pages: <code>…/assets/3x3_hamming_6_3/</code>).</li>
-      <li>Optional <strong>sheet fill</strong> adds a light Psyche-style pattern only in blank areas (keeps marker and QR on flat white where they meet the pattern edge).</li>
+      <li>Optional <strong>sheet fill</strong> (checkbox below): paints the <strong>top-right and bottom-left</strong> split areas with a stronger lavender / diagonal / Psyche accent pattern; the <strong>QR corner</strong> uses a softer fill under the code. Turn it on if those zones still look plain white.</li>
     </ul>
   </div>
 
@@ -381,35 +381,61 @@
     }
 
     /**
-     * Light fill for blank print areas — low contrast so AR marker / QR stay readable.
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {number} seed
+     * Fill for blank print areas. `wing` = top-right / bottom-left arms (clearly visible);
+     * `cell` = under QR only — slightly softer so margins stay calm.
+     * @param {'wing'|'cell'} mode
      */
-    function drawPsycheRegionFill(ctx, x, y, w, h, seed) {
+    function drawPsycheRegionFill(ctx, x, y, w, h, seed, mode) {
       if (w < 4 || h < 4) return;
       const rnd = mulberry32((seed | 0) * 2654435761 >>> 0);
+      const wing = mode === 'wing';
 
       const g = ctx.createLinearGradient(x, y, x + w, y + h);
-      g.addColorStop(0, '#f3f0f8');
-      g.addColorStop(0.45, '#faf9fc');
-      g.addColorStop(1, '#e9e5f2');
+      if (wing) {
+        g.addColorStop(0, '#dcd4f0');
+        g.addColorStop(0.4, '#ebe4f7');
+        g.addColorStop(1, '#d4c8e8');
+      } else {
+        g.addColorStop(0, '#f0ecf8');
+        g.addColorStop(0.45, '#faf8fc');
+        g.addColorStop(1, '#e6dff2');
+      }
       ctx.fillStyle = g;
       ctx.fillRect(x, y, w, h);
 
-      const nDots = Math.min(100, Math.max(12, Math.floor((w * h) / 7000)));
-      ctx.fillStyle = 'rgba(72, 56, 118, 0.09)';
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+
+      if (wing) {
+        ctx.strokeStyle = 'rgba(120, 88, 168, 0.12)';
+        ctx.lineWidth = 14;
+        const diagStep = 34;
+        for (let d = -(w + h); d < w + h; d += diagStep) {
+          ctx.beginPath();
+          ctx.moveTo(x + d, y);
+          ctx.lineTo(x + d + h + w, y + h + w);
+          ctx.stroke();
+        }
+      }
+
+      const nDots = wing
+        ? Math.min(140, Math.max(24, Math.floor((w * h) / 5000)))
+        : Math.min(100, Math.max(12, Math.floor((w * h) / 7000)));
+      ctx.fillStyle = wing ? 'rgba(48, 36, 92, 0.14)' : 'rgba(72, 56, 118, 0.09)';
       for (let i = 0; i < nDots; i++) {
         const px = x + rnd() * w;
         const py = y + rnd() * h;
-        const r = 0.4 + rnd() * 1.6;
+        const r = (wing ? 0.6 : 0.4) + rnd() * (wing ? 2.2 : 1.6);
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      ctx.strokeStyle = 'rgba(95, 78, 140, 0.07)';
-      ctx.lineWidth = 0.5;
-      const step = Math.max(18, Math.min(32, Math.floor(Math.min(w, h) / 14)));
+      ctx.strokeStyle = wing ? 'rgba(75, 58, 128, 0.14)' : 'rgba(95, 78, 140, 0.07)';
+      ctx.lineWidth = wing ? 0.75 : 0.5;
+      const step = Math.max(16, Math.min(30, Math.floor(Math.min(w, h) / (wing ? 11 : 14))));
       for (let gx = x; gx < x + w; gx += step) {
         ctx.beginPath();
         ctx.moveTo(gx, y);
@@ -423,18 +449,27 @@
         ctx.stroke();
       }
 
-      ctx.strokeStyle = 'rgba(210, 125, 55, 0.14)';
-      ctx.lineWidth = 1.25;
+      ctx.strokeStyle = wing ? 'rgba(200, 95, 40, 0.28)' : 'rgba(210, 125, 55, 0.14)';
+      ctx.lineWidth = wing ? 1.75 : 1.25;
       ctx.beginPath();
       ctx.ellipse(x + w * 0.38, y + h * 0.52, w * 0.55, h * 0.24, -0.22, 0, Math.PI * 2);
       ctx.stroke();
 
+      if (wing) {
+        ctx.strokeStyle = 'rgba(160, 85, 35, 0.35)';
+        ctx.lineWidth = 2;
+        const inset = Math.max(6, Math.min(14, Math.floor(Math.min(w, h) * 0.04)));
+        ctx.strokeRect(x + inset, y + inset, w - 2 * inset, h - 2 * inset);
+      }
+
       ctx.save();
-      ctx.font = `600 ${Math.max(11, Math.min(22, Math.floor(Math.min(w, h) * 0.06)))}px system-ui, Segoe UI, sans-serif`;
-      ctx.fillStyle = 'rgba(72, 56, 118, 0.1)';
+      const fs = Math.max(12, Math.min(wing ? 26 : 22, Math.floor(Math.min(w, h) * (wing ? 0.075 : 0.06))));
+      ctx.font = `700 ${fs}px system-ui, Segoe UI, sans-serif`;
+      ctx.fillStyle = wing ? 'rgba(52, 38, 98, 0.22)' : 'rgba(72, 56, 118, 0.1)';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText('PSYCHE AR', x + w / 2, y + h * 0.42);
+      ctx.restore();
       ctx.restore();
     }
 
@@ -442,18 +477,18 @@
       return sheetDecorate.checked;
     }
 
-    /** Split layout: top-right, bottom-left, and QR cell (under QR). */
+    /** Split layout: top-right + bottom-left “wings” get bold fill; QR cell softer (under modules). */
     function drawPsycheSplitEmptyAreas(ctx, S, markerSide, seed) {
       const trW = S - markerSide;
       const trH = markerSide;
-      if (trW > 0 && trH > 0) drawPsycheRegionFill(ctx, markerSide, 0, trW, trH, seed + 1);
+      if (trW > 0 && trH > 0) drawPsycheRegionFill(ctx, markerSide, 0, trW, trH, seed + 1, 'wing');
 
       const blW = markerSide;
       const blH = S - markerSide;
-      if (blW > 0 && blH > 0) drawPsycheRegionFill(ctx, 0, markerSide, blW, blH, seed + 3);
+      if (blW > 0 && blH > 0) drawPsycheRegionFill(ctx, 0, markerSide, blW, blH, seed + 3, 'wing');
 
       const cell = S - markerSide;
-      if (cell > 0) drawPsycheRegionFill(ctx, markerSide, markerSide, cell, cell, seed + 5);
+      if (cell > 0) drawPsycheRegionFill(ctx, markerSide, markerSide, cell, cell, seed + 5, 'cell');
     }
 
     /** Around layout: margin strips between corner QRs (drawn before QRs). */
@@ -463,12 +498,12 @@
       const innerT = PAD + qrS;
       const innerB = S - PAD - qrS;
       if (innerR > innerL) {
-        drawPsycheRegionFill(ctx, innerL, PAD, innerR - innerL, qrS, seed + 11);
-        drawPsycheRegionFill(ctx, innerL, S - PAD - qrS, innerR - innerL, qrS, seed + 13);
+        drawPsycheRegionFill(ctx, innerL, PAD, innerR - innerL, qrS, seed + 11, 'wing');
+        drawPsycheRegionFill(ctx, innerL, S - PAD - qrS, innerR - innerL, qrS, seed + 13, 'wing');
       }
       if (innerB > innerT) {
-        drawPsycheRegionFill(ctx, PAD, innerT, qrS, innerB - innerT, seed + 17);
-        drawPsycheRegionFill(ctx, S - PAD - qrS, innerT, qrS, innerB - innerT, seed + 19);
+        drawPsycheRegionFill(ctx, PAD, innerT, qrS, innerB - innerT, seed + 17, 'wing');
+        drawPsycheRegionFill(ctx, S - PAD - qrS, innerT, qrS, innerB - innerT, seed + 19, 'wing');
       }
     }
 
