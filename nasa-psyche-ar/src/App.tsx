@@ -1936,10 +1936,14 @@ const App = () => {
                 setSamples(prev => prev.filter(s => !collectedSamples.find(c => c.id === s.id)));
                 setSamplesCollected(c => c + collectedSamples.length);
                 setScore(s => s + collectedSamples.length * modeCfgRef.current.samplePoints);
-                const idx = Math.min(popupIndexRef.current, popups.length - 1);
-                const popup = popups[idx];
-                if (popup) setWaypointPopup(popup);
-                popupIndexRef.current += collectedSamples.length;
+                // Information popups for crystal + ore only — rocks still collect for score, no modal.
+                const popupSamples = collectedSamples.filter((s) => s.model === 'crystal' || s.model === 'ore');
+                if (popupSamples.length > 0) {
+                    const idx = Math.min(popupIndexRef.current, popups.length - 1);
+                    const popup = popups[idx];
+                    if (popup) setWaypointPopup(popup);
+                    popupIndexRef.current += popupSamples.length;
+                }
             }
 
         } catch (e) {
