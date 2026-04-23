@@ -65,7 +65,8 @@
     }
 
     input[type="url"],
-    input[type="text"] {
+    input[type="text"],
+    input[type="number"] {
       width: 100%;
       padding: 0.65rem 0.9rem;
       border-radius: 6px;
@@ -75,6 +76,7 @@
       font-size: 0.95rem;
       outline: none;
     }
+    input[type="number"]#marker-pct { max-width: 120px; width: 100%; }
     input:focus { border-color: #58a6ff; }
 
     .btn-row {
@@ -195,8 +197,8 @@
     <ul style="padding-left:1.1rem; margin-top:0.35rem;">
       <li>Paste your <strong>game URL</strong> (same for every marker).</li>
       <li>Marker images load from the project path <code>public/assets/3x3_hamming_6_3/</code> &mdash; on GitHub Pages that is <code>…/nasa-psyche-ar/assets/3x3_hamming_6_3/{id}.png</code>.</li>
-      <li>Each tile uses <strong>high error correction</strong> and a <strong>centered marker</strong> on a white pad. The marker is drawn at <strong>~60% of the QR width</strong>; very long URLs or weak cameras may need a shorter link or a slightly smaller marker if scans fail.</li>
-      <li>Use <strong>Regenerate</strong> after changing the URL or asset path. <strong>Print</strong> prints one sheet per marker.</li>
+      <li>Each tile uses <strong>high error correction</strong> and a <strong>centered marker</strong> on a white pad. Set <strong>Marker size (%)</strong> below (typical range ~35–50; larger is harder to scan).</li>
+      <li>Use <strong>Regenerate all</strong> after changing the URL, asset path, or percentage. <strong>Print</strong> prints one sheet per marker.</li>
     </ul>
   </div>
 
@@ -208,6 +210,10 @@
     <label class="row">
       Marker images base (folder with <code>0.png</code> … <code>7.png</code>)
       <input id="asset-base" type="text" spellcheck="false" />
+    </label>
+    <label class="row">
+      Marker size (% of QR width)
+      <input id="marker-pct" type="number" min="20" max="72" step="1" value="50" inputmode="numeric" />
     </label>
     <div class="btn-row">
       <button type="button" id="btn-regen">Regenerate all</button>
@@ -222,13 +228,14 @@
     const MARKER_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
     /** Larger canvas keeps modules readable alongside a centered marker. */
     const QR_SIZE = 640;
-    /** Marker image side / QR canvas width (0.60 = 60%). Level-H helps; shorten URL if scans fail. */
-    const MARKER_SIZE_FR = 0.60;
     /** White quiet ring around the marker (fraction of QR width, each side). */
     const QUIET_RING_FR = 0.018;
+    const MARKER_PCT_MIN = 20;
+    const MARKER_PCT_MAX = 72;
 
     const input = document.getElementById('url-input');
     const assetBaseInput = document.getElementById('asset-base');
+    const markerPctInput = document.getElementById('marker-pct');
     const grid = document.getElementById('marker-grid');
     const statusEl = document.getElementById('status');
     const btnRegen = document.getElementById('btn-regen');
@@ -243,6 +250,20 @@
     }
 
     assetBaseInput.value = localStorage.getItem('psyche-qr-asset-base') || defaultAssetBase();
+
+    const savedPct = localStorage.getItem('psyche-qr-marker-pct');
+    if (savedPct != null && savedPct !== '') {
+      const n = parseInt(savedPct, 10);
+      if (!Number.isNaN(n)) markerPctInput.value = String(Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n)));
+    }
+
+    function getMarkerSizeFr() {
+      const n = parseFloat(markerPctInput.value);
+      if (Number.isNaN(n)) return 0.5;
+      const clamped = Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n));
+      if (clamped !== n) markerPctInput.value = String(clamped);
+      return clamped / 100;
+    }
 
     function markerPngUrl(id) {
       const base = assetBaseInput.value.trim().replace(/\/?$/, '/');
@@ -322,7 +343,7 @@
 
         const w = out.width;
         const h = out.height;
-        const markerSide = Math.round(w * MARKER_SIZE_FR);
+        const markerSide = Math.round(w * getMarkerSizeFr());
         const quiet = Math.round(w * QUIET_RING_FR);
         const holeSide = markerSide + 2 * quiet;
         const x0 = Math.round((w - holeSide) / 2);
@@ -348,6 +369,7 @@
 
       localStorage.setItem('psyche-qr-url', url);
       localStorage.setItem('psyche-qr-asset-base', assetBaseInput.value.trim());
+      localStorage.setItem('psyche-qr-marker-pct', markerPctInput.value.trim());
 
       grid.innerHTML = '';
       btnRegen.disabled = true;
@@ -380,11 +402,17 @@
 
       btnRegen.disabled = false;
       btnPrint.disabled = false;
-      setStatus('Done. If a tile shows an error, check the marker base URL and that 0.png–7.png exist there.');
+      setStatus('Done (' + markerPctInput.value + '% marker). If a tile errors, check the asset URL and 0.png–7.png.');
     }
 
     input.addEventListener('change', () => {
       if (input.value.trim()) localStorage.setItem('psyche-qr-url', input.value.trim());
+    });
+
+    markerPctInput.addEventListener('change', () => {
+      getMarkerSizeFr();
+      localStorage.setItem('psyche-qr-marker-pct', markerPctInput.value.trim());
+      if (input.value.trim()) void regenerateAll();
     });
 
     btnRegen.addEventListener('click', () => void regenerateAll());
