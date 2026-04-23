@@ -66,7 +66,8 @@
 
     input[type="url"],
     input[type="text"],
-    input[type="number"] {
+    input[type="number"],
+    select {
       width: 100%;
       padding: 0.65rem 0.9rem;
       border-radius: 6px;
@@ -76,8 +77,9 @@
       font-size: 0.95rem;
       outline: none;
     }
+    select { cursor: pointer; max-width: 100%; }
     input[type="number"]#marker-pct { max-width: 120px; width: 100%; }
-    input:focus { border-color: #58a6ff; }
+    input:focus, select:focus { border-color: #58a6ff; }
 
     .btn-row {
       display: flex;
@@ -102,10 +104,10 @@
 
     #marker-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
       gap: 1rem;
       width: 100%;
-      max-width: 1100px;
+      max-width: 1200px;
     }
 
     .marker-card {
@@ -182,7 +184,7 @@
       .marker-card h2 { color: #000; font-size: 14pt; }
       .marker-card .composite-wrap {
         padding: 0;
-        transform: scale(1.15);
+        transform: scale(1.05);
         transform-origin: center;
       }
     }
@@ -190,30 +192,36 @@
 </head>
 <body>
 
-  <h1>NASA Psyche AR &mdash; QR + centered marker (0&ndash;7)</h1>
+  <h1>NASA Psyche AR &mdash; QR + marker sheets (0&ndash;7)</h1>
 
   <div class="instructions">
-    <strong>What this does:</strong>
+    <strong>Layouts</strong>
     <ul style="padding-left:1.1rem; margin-top:0.35rem;">
-      <li>Paste your <strong>game URL</strong> (same for every marker).</li>
-      <li>Marker images load from the project path <code>public/assets/3x3_hamming_6_3/</code> &mdash; on GitHub Pages that is <code>…/nasa-psyche-ar/assets/3x3_hamming_6_3/{id}.png</code>.</li>
-      <li>Each tile uses <strong>high error correction</strong> and a <strong>centered marker</strong> on a white pad. Set <strong>Marker size (%)</strong> below (typical range ~35–50; larger is harder to scan).</li>
-      <li>Use <strong>Regenerate all</strong> after changing the URL, asset path, or percentage. <strong>Print</strong> prints one sheet per marker.</li>
+      <li><strong>Around marker (default):</strong> the barcode image is <strong>fully visible in the center</strong>. The same game URL is encoded in <strong>four separate QR codes</strong> in the corners — scan <strong>any</strong> corner QR (not the marker).</li>
+      <li><strong>Overlay (single QR):</strong> one large QR with the marker drawn on top in the middle (limited % so it still scans).</li>
+      <li>Marker PNGs: <code>public/assets/3x3_hamming_6_3/{id}.png</code> (on Pages: <code>…/assets/3x3_hamming_6_3/</code>).</li>
     </ul>
   </div>
 
   <div class="controls">
     <label class="row">
-      Game URL (encoded in every QR)
+      Layout
+      <select id="layout-mode" aria-label="Layout mode">
+        <option value="around">Around marker — 4 corner QRs + center marker</option>
+        <option value="overlay">Overlay — one QR with marker on top</option>
+      </select>
+    </label>
+    <label class="row">
+      Game URL
       <input id="url-input" type="url" placeholder="https://methsirih.github.io/nasa-psyche-ar/" autocomplete="off" spellcheck="false" />
     </label>
     <label class="row">
-      Marker images base (folder with <code>0.png</code> … <code>7.png</code>)
+      Marker images base
       <input id="asset-base" type="text" spellcheck="false" />
     </label>
     <label class="row">
-      Marker size (% of QR width)
-      <input id="marker-pct" type="number" min="20" max="72" step="1" value="50" inputmode="numeric" />
+      <span id="marker-pct-label">Center marker (% of sheet)</span>
+      <input id="marker-pct" type="number" min="20" max="72" step="1" value="48" inputmode="numeric" />
     </label>
     <div class="btn-row">
       <button type="button" id="btn-regen">Regenerate all</button>
@@ -226,16 +234,18 @@
 
   <script>
     const MARKER_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
-    /** Larger canvas keeps modules readable alongside a centered marker. */
-    const QR_SIZE = 640;
-    /** White quiet ring around the marker (fraction of QR width, each side). */
+    const OVERLAY_QR_SIZE = 640;
+    const SHEET_SIZE = 1000;
+    const SHEET_PAD = 22;
     const QUIET_RING_FR = 0.018;
     const MARKER_PCT_MIN = 20;
     const MARKER_PCT_MAX = 72;
 
     const input = document.getElementById('url-input');
     const assetBaseInput = document.getElementById('asset-base');
+    const layoutMode = document.getElementById('layout-mode');
     const markerPctInput = document.getElementById('marker-pct');
+    const markerPctLabel = document.getElementById('marker-pct-label');
     const grid = document.getElementById('marker-grid');
     const statusEl = document.getElementById('status');
     const btnRegen = document.getElementById('btn-regen');
@@ -251,18 +261,39 @@
 
     assetBaseInput.value = localStorage.getItem('psyche-qr-asset-base') || defaultAssetBase();
 
+    const savedLayout = localStorage.getItem('psyche-qr-layout');
+    if (savedLayout === 'overlay' || savedLayout === 'around') layoutMode.value = savedLayout;
+
     const savedPct = localStorage.getItem('psyche-qr-marker-pct');
     if (savedPct != null && savedPct !== '') {
       const n = parseInt(savedPct, 10);
       if (!Number.isNaN(n)) markerPctInput.value = String(Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n)));
     }
 
-    function getMarkerSizeFr() {
+    function updateMarkerPctLabel() {
+      if (layoutMode.value === 'around') {
+        markerPctLabel.textContent = 'Center marker (% of sheet width)';
+      } else {
+        markerPctLabel.textContent = 'Marker size (% of QR width, center overlay)';
+      }
+    }
+
+    layoutMode.addEventListener('change', () => {
+      localStorage.setItem('psyche-qr-layout', layoutMode.value);
+      updateMarkerPctLabel();
+      if (input.value.trim()) void regenerateAll();
+    });
+
+    function getMarkerPctClamped() {
       const n = parseFloat(markerPctInput.value);
-      if (Number.isNaN(n)) return 0.5;
-      const clamped = Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n));
-      if (clamped !== n) markerPctInput.value = String(clamped);
-      return clamped / 100;
+      if (Number.isNaN(n)) return 48;
+      const c = Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n));
+      if (c !== n) markerPctInput.value = String(c);
+      return c;
+    }
+
+    function getMarkerSizeFr() {
+      return getMarkerPctClamped() / 100;
     }
 
     function markerPngUrl(id) {
@@ -284,7 +315,6 @@
       });
     }
 
-    /** Pull bitmap from QRCode.js container (canvas or img). */
     function qrBitmapFromDiv(div) {
       const canvas = div.querySelector('canvas');
       if (canvas) return canvas;
@@ -293,8 +323,7 @@
       const c = document.createElement('canvas');
       c.width = img.naturalWidth || img.width;
       c.height = img.naturalHeight || img.height;
-      const ctx = c.getContext('2d');
-      ctx.drawImage(img, 0, 0);
+      c.getContext('2d').drawImage(img, 0, 0);
       return c;
     }
 
@@ -309,7 +338,7 @@
             return;
           }
           n++;
-          if (n >= (attempts || 40)) {
+          if (n >= (attempts || 50)) {
             clearInterval(t);
             reject(new Error('QR render timeout'));
           }
@@ -317,45 +346,86 @@
       });
     }
 
-    async function compositeQrWithCenterMarker(url, markerId) {
+    async function renderQrToCanvas(text, pixelSize, correctLevel) {
       const temp = document.createElement('div');
       temp.style.position = 'fixed';
       temp.style.left = '-10000px';
       temp.style.top = '0';
       document.body.appendChild(temp);
-
       try {
-        // High error correction so a centered marker patch still scans.
         new QRCode(temp, {
-          text: url.trim(),
-          width: QR_SIZE,
-          height: QR_SIZE,
-          correctLevel: QRCode.CorrectLevel.H,
+          text: text.trim(),
+          width: pixelSize,
+          height: pixelSize,
+          correctLevel: correctLevel,
         });
-        const qrBmp = await waitForQr(temp, 50);
-
-        const markerImg = await loadImage(markerPngUrl(markerId));
-        const out = document.createElement('canvas');
-        out.width = qrBmp.width;
-        out.height = qrBmp.height;
-        const ctx = out.getContext('2d');
-        ctx.drawImage(qrBmp, 0, 0);
-
-        const w = out.width;
-        const h = out.height;
-        const markerSide = Math.round(w * getMarkerSizeFr());
-        const quiet = Math.round(w * QUIET_RING_FR);
-        const holeSide = markerSide + 2 * quiet;
-        const x0 = Math.round((w - holeSide) / 2);
-        const y0 = Math.round((h - holeSide) / 2);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(x0, y0, holeSide, holeSide);
-        ctx.drawImage(markerImg, x0 + quiet, y0 + quiet, markerSide, markerSide);
-
-        return out;
+        return await waitForQr(temp, 60);
       } finally {
         temp.remove();
       }
+    }
+
+    /** Four full QRs in corners; marker untouched in center (same URL in each QR). */
+    async function buildSheetAroundMarker(url, markerId) {
+      const S = SHEET_SIZE;
+      const PAD = SHEET_PAD;
+      let M = Math.round(S * getMarkerSizeFr());
+      let qrS = Math.floor((S - M) / 2 - PAD * 2);
+      while (qrS < 120 && M > S * 0.22) {
+        M -= 12;
+        qrS = Math.floor((S - M) / 2 - PAD * 2);
+      }
+      qrS = Math.max(120, Math.min(240, qrS));
+
+      const qrBmp = await renderQrToCanvas(url, qrS, QRCode.CorrectLevel.M);
+      const markerImg = await loadImage(markerPngUrl(markerId));
+
+      const out = document.createElement('canvas');
+      out.width = S;
+      out.height = S;
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, S, S);
+
+      ctx.drawImage(qrBmp, PAD, PAD);
+      ctx.drawImage(qrBmp, S - PAD - qrS, PAD);
+      ctx.drawImage(qrBmp, PAD, S - PAD - qrS);
+      ctx.drawImage(qrBmp, S - PAD - qrS, S - PAD - qrS);
+
+      const mx = (S - M) / 2;
+      const my = (S - M) / 2;
+      ctx.drawImage(markerImg, mx, my, M, M);
+
+      return out;
+    }
+
+    /** Single QR with marker painted in the middle (legacy). */
+    async function buildSheetOverlay(url, markerId) {
+      const qrBmp = await renderQrToCanvas(url, OVERLAY_QR_SIZE, QRCode.CorrectLevel.H);
+      const markerImg = await loadImage(markerPngUrl(markerId));
+      const out = document.createElement('canvas');
+      out.width = qrBmp.width;
+      out.height = qrBmp.height;
+      const ctx = out.getContext('2d');
+      ctx.drawImage(qrBmp, 0, 0);
+
+      const w = out.width;
+      const h = out.height;
+      const markerSide = Math.round(w * getMarkerSizeFr());
+      const quiet = Math.round(w * QUIET_RING_FR);
+      const holeSide = markerSide + 2 * quiet;
+      const x0 = Math.round((w - holeSide) / 2);
+      const y0 = Math.round((h - holeSide) / 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x0, y0, holeSide, holeSide);
+      ctx.drawImage(markerImg, x0 + quiet, y0 + quiet, markerSide, markerSide);
+
+      return out;
+    }
+
+    async function buildSheet(url, markerId) {
+      if (layoutMode.value === 'overlay') return buildSheetOverlay(url, markerId);
+      return buildSheetAroundMarker(url, markerId);
     }
 
     async function regenerateAll() {
@@ -370,6 +440,7 @@
       localStorage.setItem('psyche-qr-url', url);
       localStorage.setItem('psyche-qr-asset-base', assetBaseInput.value.trim());
       localStorage.setItem('psyche-qr-marker-pct', markerPctInput.value.trim());
+      localStorage.setItem('psyche-qr-layout', layoutMode.value);
 
       grid.innerHTML = '';
       btnRegen.disabled = true;
@@ -386,7 +457,7 @@
         const saveBtn = card.querySelector('.save-one');
 
         try {
-          const canvas = await compositeQrWithCenterMarker(url, id);
+          const canvas = await buildSheet(url, id);
           wrap.appendChild(canvas);
           saveBtn.onclick = () => {
             const a = document.createElement('a');
@@ -402,7 +473,8 @@
 
       btnRegen.disabled = false;
       btnPrint.disabled = false;
-      setStatus('Done (' + markerPctInput.value + '% marker). If a tile errors, check the asset URL and 0.png–7.png.');
+      const mode = layoutMode.value === 'around' ? '4-corner QRs + center marker' : 'overlay';
+      setStatus('Done — ' + mode + ', ' + markerPctInput.value + '%.');
     }
 
     input.addEventListener('change', () => {
@@ -410,7 +482,7 @@
     });
 
     markerPctInput.addEventListener('change', () => {
-      getMarkerSizeFr();
+      getMarkerPctClamped();
       localStorage.setItem('psyche-qr-marker-pct', markerPctInput.value.trim());
       if (input.value.trim()) void regenerateAll();
     });
@@ -421,6 +493,7 @@
     const savedUrl = localStorage.getItem('psyche-qr-url');
     if (savedUrl) input.value = savedUrl;
 
+    updateMarkerPctLabel();
     void regenerateAll();
   </script>
 </body>
