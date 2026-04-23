@@ -197,8 +197,9 @@
   <div class="instructions">
     <strong>Layouts</strong>
     <ul style="padding-left:1.1rem; margin-top:0.35rem;">
-      <li><strong>Around marker (default):</strong> the barcode image is <strong>fully visible in the center</strong>. The same game URL is encoded in <strong>four separate QR codes</strong> in the corners — scan <strong>any</strong> corner QR (not the marker).</li>
-      <li><strong>Overlay (single QR):</strong> one large QR with the marker drawn on top in the middle (limited % so it still scans).</li>
+      <li><strong>Split tile (default):</strong> AR marker fills the <strong>top-left</strong> block; one full QR sits in the <strong>bottom-right</strong> block. They meet at a single inner corner (like a ⅔ + ⅓ split when marker % is 67). Scan the <strong>QR only</strong>.</li>
+      <li><strong>Around marker:</strong> marker centered; the same URL in <strong>four corner QRs</strong>.</li>
+      <li><strong>Overlay:</strong> one large QR with the marker drawn on top in the middle (limited % so it still scans).</li>
       <li>Marker PNGs: <code>public/assets/3x3_hamming_6_3/{id}.png</code> (on Pages: <code>…/assets/3x3_hamming_6_3/</code>).</li>
     </ul>
   </div>
@@ -207,6 +208,7 @@
     <label class="row">
       Layout
       <select id="layout-mode" aria-label="Layout mode">
+        <option value="split">Split tile — marker top-left, QR bottom-right</option>
         <option value="around">Around marker — 4 corner QRs + center marker</option>
         <option value="overlay">Overlay — one QR with marker on top</option>
       </select>
@@ -221,7 +223,7 @@
     </label>
     <label class="row">
       <span id="marker-pct-label">Center marker (% of sheet)</span>
-      <input id="marker-pct" type="number" min="20" max="72" step="1" value="48" inputmode="numeric" />
+      <input id="marker-pct" type="number" min="20" max="72" step="1" value="67" inputmode="numeric" />
     </label>
     <div class="btn-row">
       <button type="button" id="btn-regen">Regenerate all</button>
@@ -240,6 +242,8 @@
     const QUIET_RING_FR = 0.018;
     const MARKER_PCT_MIN = 20;
     const MARKER_PCT_MAX = 72;
+    const SPLIT_CELL_PAD = 10;
+    const SPLIT_MIN_QR_PX = 120;
 
     const input = document.getElementById('url-input');
     const assetBaseInput = document.getElementById('asset-base');
@@ -262,7 +266,11 @@
     assetBaseInput.value = localStorage.getItem('psyche-qr-asset-base') || defaultAssetBase();
 
     const savedLayout = localStorage.getItem('psyche-qr-layout');
-    if (savedLayout === 'overlay' || savedLayout === 'around') layoutMode.value = savedLayout;
+    if (savedLayout === 'overlay' || savedLayout === 'around' || savedLayout === 'split') {
+      layoutMode.value = savedLayout;
+    } else {
+      layoutMode.value = 'split';
+    }
 
     const savedPct = localStorage.getItem('psyche-qr-marker-pct');
     if (savedPct != null && savedPct !== '') {
@@ -271,7 +279,9 @@
     }
 
     function updateMarkerPctLabel() {
-      if (layoutMode.value === 'around') {
+      if (layoutMode.value === 'split') {
+        markerPctLabel.textContent = 'Marker block (% of sheet — rest is QR cell + margins)';
+      } else if (layoutMode.value === 'around') {
         markerPctLabel.textContent = 'Center marker (% of sheet width)';
       } else {
         markerPctLabel.textContent = 'Marker size (% of QR width, center overlay)';
@@ -286,7 +296,7 @@
 
     function getMarkerPctClamped() {
       const n = parseFloat(markerPctInput.value);
-      if (Number.isNaN(n)) return 48;
+      if (Number.isNaN(n)) return 67;
       const c = Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n));
       if (c !== n) markerPctInput.value = String(c);
       return c;
@@ -365,6 +375,38 @@
       }
     }
 
+    /**
+     * Marker in top-left f×f of sheet; one QR in bottom-right (1−f)×(1−f), inner corners meet.
+     * marker-pct = f×100 (e.g. 67 ≈ diagram ⅔ / ⅓).
+     */
+    async function buildSheetSplit(url, markerId) {
+      const S = SHEET_SIZE;
+      let f = getMarkerSizeFr();
+      const fMax = 1 - (SPLIT_MIN_QR_PX + 2 * SPLIT_CELL_PAD) / S;
+      if (f > fMax) f = fMax;
+
+      const markerSide = Math.round(f * S);
+      const qrCell = S - markerSide;
+      const inner = Math.max(SPLIT_MIN_QR_PX, qrCell - 2 * SPLIT_CELL_PAD);
+      const qrBmp = await renderQrToCanvas(url, Math.floor(inner), QRCode.CorrectLevel.M);
+      const markerImg = await loadImage(markerPngUrl(markerId));
+
+      const out = document.createElement('canvas');
+      out.width = S;
+      out.height = S;
+      const ctx = out.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, S, S);
+
+      ctx.drawImage(markerImg, 0, 0, markerSide, markerSide);
+
+      const qx = markerSide + SPLIT_CELL_PAD + (qrCell - 2 * SPLIT_CELL_PAD - qrBmp.width) / 2;
+      const qy = markerSide + SPLIT_CELL_PAD + (qrCell - 2 * SPLIT_CELL_PAD - qrBmp.height) / 2;
+      ctx.drawImage(qrBmp, Math.round(qx), Math.round(qy));
+
+      return out;
+    }
+
     /** Four full QRs in corners; marker untouched in center (same URL in each QR). */
     async function buildSheetAroundMarker(url, markerId) {
       const S = SHEET_SIZE;
@@ -425,7 +467,8 @@
 
     async function buildSheet(url, markerId) {
       if (layoutMode.value === 'overlay') return buildSheetOverlay(url, markerId);
-      return buildSheetAroundMarker(url, markerId);
+      if (layoutMode.value === 'around') return buildSheetAroundMarker(url, markerId);
+      return buildSheetSplit(url, markerId);
     }
 
     async function regenerateAll() {
@@ -473,7 +516,9 @@
 
       btnRegen.disabled = false;
       btnPrint.disabled = false;
-      const mode = layoutMode.value === 'around' ? '4-corner QRs + center marker' : 'overlay';
+      let mode = 'split tile (marker TL / QR BR)';
+      if (layoutMode.value === 'around') mode = '4-corner QRs + center marker';
+      else if (layoutMode.value === 'overlay') mode = 'overlay';
       setStatus('Done — ' + mode + ', ' + markerPctInput.value + '%.');
     }
 
