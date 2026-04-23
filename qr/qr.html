@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NASA Psyche AR — QR Code Generator</title>
+  <title>NASA Psyche AR — QR + marker sheets</title>
   <script src="qrcode.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -13,19 +13,19 @@
       background: #0d1117;
       color: #e6edf3;
       min-height: 100vh;
+      padding: 1.5rem;
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      padding: 2rem;
-      gap: 1.5rem;
+      gap: 1.25rem;
     }
 
     h1 {
-      font-size: 1.4rem;
+      font-size: 1.35rem;
       font-weight: 600;
       letter-spacing: 0.03em;
       color: #58a6ff;
+      text-align: center;
     }
 
     .instructions {
@@ -33,194 +33,366 @@
       border: 1px solid #30363d;
       border-radius: 8px;
       padding: 1rem 1.25rem;
-      max-width: 480px;
+      max-width: 640px;
       width: 100%;
-      font-size: 0.9rem;
-      line-height: 1.7;
+      font-size: 0.88rem;
+      line-height: 1.65;
       color: #8b949e;
     }
     .instructions strong { color: #e6edf3; }
+    .instructions code {
+      font-size: 0.78rem;
+      background: #21262d;
+      padding: 0.12rem 0.35rem;
+      border-radius: 4px;
+      color: #7ee787;
+    }
 
-    .input-row {
+    .controls {
       display: flex;
-      gap: 0.5rem;
-      max-width: 480px;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-width: 640px;
       width: 100%;
     }
 
-    input[type="url"] {
-      flex: 1;
+    label.row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.8rem;
+      color: #8b949e;
+    }
+
+    input[type="url"],
+    input[type="text"] {
+      width: 100%;
       padding: 0.65rem 0.9rem;
       border-radius: 6px;
       border: 1px solid #30363d;
       background: #161b22;
       color: #e6edf3;
-      font-size: 1rem;
+      font-size: 0.95rem;
       outline: none;
-      transition: border-color 0.15s;
     }
-    input[type="url"]:focus { border-color: #58a6ff; }
-    input[type="url"]::placeholder { color: #484f58; }
-
-    #qr-wrapper {
-      background: #fff;
-      padding: 24px;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 260px;
-      min-height: 260px;
-    }
-
-    #qr-placeholder {
-      color: #aaa;
-      font-size: 0.85rem;
-      font-family: sans-serif;
-      text-align: center;
-    }
+    input:focus { border-color: #58a6ff; }
 
     .btn-row {
       display: flex;
-      gap: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.6rem;
     }
 
     button {
-      padding: 0.6rem 1.4rem;
+      padding: 0.55rem 1.1rem;
       border-radius: 6px;
       border: none;
-      font-size: 0.95rem;
-      font-weight: 500;
+      font-size: 0.9rem;
+      font-weight: 600;
       cursor: pointer;
       transition: opacity 0.15s;
     }
-    button:hover { opacity: 0.85; }
-    button:disabled { opacity: 0.35; cursor: default; }
+    button:hover { opacity: 0.88; }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
 
-    #btn-print  { background: #238636; color: #fff; }
-    #btn-save   { background: #1f6feb; color: #fff; }
+    #btn-print { background: #238636; color: #fff; }
+    #btn-regen { background: #1f6feb; color: #fff; }
 
-    /* ── Print styles ─────────────────────────────────── */
+    #marker-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1rem;
+      width: 100%;
+      max-width: 1100px;
+    }
+
+    .marker-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .marker-card h2 {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #58a6ff;
+    }
+
+    .marker-card .composite-wrap {
+      background: #fff;
+      border-radius: 8px;
+      padding: 10px;
+      line-height: 0;
+    }
+
+    .marker-card canvas {
+      max-width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .marker-card .err {
+      color: #f85149;
+      font-size: 0.8rem;
+      text-align: center;
+    }
+
+    .marker-card .save-one {
+      background: #21262d;
+      color: #e6edf3;
+      border: 1px solid #30363d;
+      width: 100%;
+    }
+
+    .status {
+      font-size: 0.8rem;
+      color: #8b949e;
+    }
+
     @media print {
       body {
         background: #fff;
         color: #000;
         padding: 0;
-        justify-content: center;
+        align-items: stretch;
+      }
+      h1, .instructions, .controls, .btn-row, .status, label.row { display: none !important; }
+      #marker-grid {
+        display: block;
+        max-width: none;
+      }
+      .marker-card {
+        page-break-after: always;
+        page-break-inside: avoid;
+        border: none;
+        padding: 12mm;
         align-items: center;
+        min-height: 100vh;
+        justify-content: center;
       }
-      h1, .instructions, .input-row, .btn-row { display: none !important; }
-      #qr-wrapper {
-        border-radius: 0;
+      .marker-card:last-child { page-break-after: auto; }
+      .marker-card .save-one { display: none; }
+      .marker-card h2 { color: #000; font-size: 14pt; }
+      .marker-card .composite-wrap {
         padding: 0;
-        width: 90vmin;
-        height: 90vmin;
-        min-width: unset;
-        min-height: unset;
-        margin: auto;
+        transform: scale(1.15);
+        transform-origin: center;
       }
-      #qr-wrapper canvas,
-      #qr-wrapper img,
-      #qr-wrapper table {
-        width: 100% !important;
-        height: 100% !important;
-      }
-      #qr-placeholder { display: none; }
     }
   </style>
 </head>
 <body>
 
-  <h1>NASA Psyche AR &mdash; QR Code Generator</h1>
+  <h1>NASA Psyche AR &mdash; QR + centered marker (0&ndash;7)</h1>
 
   <div class="instructions">
-    <strong>How to use:</strong>
-    <ul style="padding-left:1.1rem; margin-top:0.4rem;">
-      <li>Paste the game URL into the box below and the QR code updates instantly.</li>
-      <li>Click <strong>Print</strong> (or Ctrl+P) to print a full-page QR ready to post.</li>
-      <li>Click <strong>Save as PNG</strong> to download the QR image for flyers or signage.</li>
+    <strong>What this does:</strong>
+    <ul style="padding-left:1.1rem; margin-top:0.35rem;">
+      <li>Paste your <strong>game URL</strong> (same for every marker).</li>
+      <li>Marker images load from the project path <code>public/assets/3x3_hamming_6_3/</code> &mdash; on GitHub Pages that is <code>…/nasa-psyche-ar/assets/3x3_hamming_6_3/{id}.png</code>.</li>
+      <li>Each tile is a <strong>QR code (high error correction)</strong> with the <strong>barcode marker centered</strong> on a white pad so phones can still scan the URL.</li>
+      <li>Use <strong>Regenerate</strong> after changing the URL or asset path. <strong>Print</strong> prints one sheet per marker.</li>
     </ul>
   </div>
 
-  <div class="input-row">
-    <input id="url-input" type="url" placeholder="Paste the game URL here…" autocomplete="off" spellcheck="false" />
+  <div class="controls">
+    <label class="row">
+      Game URL (encoded in every QR)
+      <input id="url-input" type="url" placeholder="https://methsirih.github.io/nasa-psyche-ar/" autocomplete="off" spellcheck="false" />
+    </label>
+    <label class="row">
+      Marker images base (folder with <code>0.png</code> … <code>7.png</code>)
+      <input id="asset-base" type="text" spellcheck="false" />
+    </label>
+    <div class="btn-row">
+      <button type="button" id="btn-regen">Regenerate all</button>
+      <button type="button" id="btn-print">Print all sheets</button>
+    </div>
+    <p class="status" id="status"></p>
   </div>
 
-  <div id="qr-wrapper">
-    <span id="qr-placeholder">Enter a URL above<br>to generate a QR code.</span>
-    <div id="qr-canvas"></div>
-  </div>
-
-  <div class="btn-row">
-    <button id="btn-print" disabled>Print</button>
-    <button id="btn-save"  disabled>Save as PNG</button>
-  </div>
+  <div id="marker-grid" aria-live="polite"></div>
 
   <script>
-    const input     = document.getElementById('url-input');
-    const canvasDiv = document.getElementById('qr-canvas');
-    const placeholder = document.getElementById('qr-placeholder');
-    const btnPrint  = document.getElementById('btn-print');
-    const btnSave   = document.getElementById('btn-save');
+    const MARKER_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
+    const QR_SIZE = 480;
+    /** Center patch (marker + white pad) as fraction of QR module width — tune if scans fail. */
+    const CENTER_FR = 0.26;
 
-    let qr = null;
+    const input = document.getElementById('url-input');
+    const assetBaseInput = document.getElementById('asset-base');
+    const grid = document.getElementById('marker-grid');
+    const statusEl = document.getElementById('status');
+    const btnRegen = document.getElementById('btn-regen');
+    const btnPrint = document.getElementById('btn-print');
 
-    function render(url) {
-      canvasDiv.innerHTML = '';
-      if (!url.trim()) {
-        placeholder.style.display = '';
-        btnPrint.disabled = true;
-        btnSave.disabled  = true;
-        return;
+    function defaultAssetBase() {
+      try {
+        return new URL('../assets/3x3_hamming_6_3/', window.location.href).href;
+      } catch {
+        return '../assets/3x3_hamming_6_3/';
       }
-      placeholder.style.display = 'none';
-      btnPrint.disabled = false;
-      btnSave.disabled  = false;
-      qr = new QRCode(canvasDiv, {
-        text: url.trim(),
-        width: 256,
-        height: 256,
-        correctLevel: QRCode.CorrectLevel.M,
+    }
+
+    assetBaseInput.value = localStorage.getItem('psyche-qr-asset-base') || defaultAssetBase();
+
+    function markerPngUrl(id) {
+      const base = assetBaseInput.value.trim().replace(/\/?$/, '/');
+      return base + id + '.png';
+    }
+
+    function setStatus(msg) {
+      statusEl.textContent = msg || '';
+    }
+
+    function loadImage(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to load ' + src));
+        img.src = src;
       });
     }
 
-    input.addEventListener('input', () => {
-      const url = input.value;
-      if (url.trim()) {
-        localStorage.setItem('psyche-qr-url', url);
-      } else {
-        localStorage.removeItem('psyche-qr-url');
-      }
-      render(url);
-    });
-
-    // Restore last URL on load
-    const saved = localStorage.getItem('psyche-qr-url');
-    if (saved) {
-      input.value = saved;
-      render(saved);
+    /** Pull bitmap from QRCode.js container (canvas or img). */
+    function qrBitmapFromDiv(div) {
+      const canvas = div.querySelector('canvas');
+      if (canvas) return canvas;
+      const img = div.querySelector('img');
+      if (!img) return null;
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth || img.width;
+      c.height = img.naturalHeight || img.height;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      return c;
     }
 
+    function waitForQr(div, attempts) {
+      return new Promise((resolve, reject) => {
+        let n = 0;
+        const t = setInterval(() => {
+          const bmp = qrBitmapFromDiv(div);
+          if (bmp && bmp.width > 0) {
+            clearInterval(t);
+            resolve(bmp);
+            return;
+          }
+          n++;
+          if (n >= (attempts || 40)) {
+            clearInterval(t);
+            reject(new Error('QR render timeout'));
+          }
+        }, 50);
+      });
+    }
+
+    async function compositeQrWithCenterMarker(url, markerId) {
+      const temp = document.createElement('div');
+      temp.style.position = 'fixed';
+      temp.style.left = '-10000px';
+      temp.style.top = '0';
+      document.body.appendChild(temp);
+
+      try {
+        // High error correction so a centered marker patch still scans.
+        new QRCode(temp, {
+          text: url.trim(),
+          width: QR_SIZE,
+          height: QR_SIZE,
+          correctLevel: QRCode.CorrectLevel.H,
+        });
+        const qrBmp = await waitForQr(temp, 50);
+
+        const markerImg = await loadImage(markerPngUrl(markerId));
+        const out = document.createElement('canvas');
+        out.width = qrBmp.width;
+        out.height = qrBmp.height;
+        const ctx = out.getContext('2d');
+        ctx.drawImage(qrBmp, 0, 0);
+
+        const w = out.width;
+        const patch = Math.round(w * CENTER_FR);
+        const pad = Math.round(patch * 0.12);
+        const x0 = Math.round((w - patch) / 2) - pad;
+        const y0 = Math.round((w - patch) / 2) - pad;
+        const side = patch + pad * 2;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x0, y0, side, side);
+        ctx.drawImage(markerImg, x0 + pad, y0 + pad, patch, patch);
+
+        return out;
+      } finally {
+        temp.remove();
+      }
+    }
+
+    async function regenerateAll() {
+      const url = input.value.trim();
+      if (!url) {
+        setStatus('Enter a game URL first.');
+        grid.innerHTML = '';
+        btnPrint.disabled = true;
+        return;
+      }
+
+      localStorage.setItem('psyche-qr-url', url);
+      localStorage.setItem('psyche-qr-asset-base', assetBaseInput.value.trim());
+
+      grid.innerHTML = '';
+      btnRegen.disabled = true;
+      btnPrint.disabled = true;
+      setStatus('Generating…');
+
+      const canvases = [];
+
+      for (const id of MARKER_IDS) {
+        const card = document.createElement('div');
+        card.className = 'marker-card';
+        card.dataset.markerId = String(id);
+        card.innerHTML = '<h2>Marker ' + id + '</h2><div class="composite-wrap"></div><button type="button" class="save-one">Save PNG</button>';
+        grid.appendChild(card);
+        const wrap = card.querySelector('.composite-wrap');
+        const saveBtn = card.querySelector('.save-one');
+
+        try {
+          const canvas = await compositeQrWithCenterMarker(url, id);
+          canvases.push(canvas);
+          wrap.appendChild(canvas);
+          saveBtn.onclick = () => {
+            const a = document.createElement('a');
+            a.href = canvas.toDataURL('image/png');
+            a.download = 'psyche-ar-qr-marker-' + id + '.png';
+            a.click();
+          };
+        } catch (e) {
+          wrap.innerHTML = '<span class="err">' + (e.message || String(e)) + '</span>';
+          saveBtn.disabled = true;
+        }
+      }
+
+      btnRegen.disabled = false;
+      btnPrint.disabled = false;
+      setStatus('Done. If a tile shows an error, check the marker base URL and that 0.png–7.png exist there.');
+    }
+
+    input.addEventListener('change', () => {
+      if (input.value.trim()) localStorage.setItem('psyche-qr-url', input.value.trim());
+    });
+
+    btnRegen.addEventListener('click', () => void regenerateAll());
     btnPrint.addEventListener('click', () => window.print());
 
-    btnSave.addEventListener('click', () => {
-      const src = canvasDiv.querySelector('canvas');
-      if (!src) return;
-      // Composite onto a larger white canvas so the QR has a scannable quiet zone.
-      const margin = Math.round(src.width * 0.12);
-      const out = document.createElement('canvas');
-      out.width  = src.width  + margin * 2;
-      out.height = src.height + margin * 2;
-      const ctx = out.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, out.width, out.height);
-      ctx.drawImage(src, margin, margin);
-      const a = document.createElement('a');
-      a.href = out.toDataURL('image/png');
-      a.download = 'psyche-ar-qr.png';
-      a.click();
-    });
-  </script>
+    const savedUrl = localStorage.getItem('psyche-qr-url');
+    if (savedUrl) input.value = savedUrl;
 
+    void regenerateAll();
+  </script>
 </body>
 </html>
