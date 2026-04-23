@@ -224,7 +224,7 @@
     </label>
     <label class="row">
       <span id="marker-pct-label">Center marker (% of sheet)</span>
-      <input id="marker-pct" type="number" min="20" max="72" step="1" value="67" inputmode="numeric" />
+      <input id="marker-pct" type="number" step="any" value="67" inputmode="decimal" />
     </label>
     <label class="row" style="flex-direction:row; align-items:center; gap:0.5rem;">
       <input type="checkbox" id="sheet-decorate" checked style="width:auto;" />
@@ -245,8 +245,6 @@
     const SHEET_SIZE = 1000;
     const SHEET_PAD = 22;
     const QUIET_RING_FR = 0.018;
-    const MARKER_PCT_MIN = 20;
-    const MARKER_PCT_MAX = 72;
     const SPLIT_CELL_PAD = 10;
     const SPLIT_MIN_QR_PX = 120;
 
@@ -284,8 +282,8 @@
 
     const savedPct = localStorage.getItem('psyche-qr-marker-pct');
     if (savedPct != null && savedPct !== '') {
-      const n = parseInt(savedPct, 10);
-      if (!Number.isNaN(n)) markerPctInput.value = String(Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n)));
+      const n = parseFloat(savedPct);
+      if (Number.isFinite(n) && n > 0) markerPctInput.value = String(savedPct.trim());
     }
 
     function updateMarkerPctLabel() {
@@ -309,12 +307,11 @@
       if (input.value.trim()) void regenerateAll();
     });
 
+    /** Positive % of sheet (split/around) or of QR width (overlay). No upper cap — split layout still enforces a minimum QR size internally. */
     function getMarkerPctClamped() {
       const n = parseFloat(markerPctInput.value);
-      if (Number.isNaN(n)) return 67;
-      const c = Math.min(MARKER_PCT_MAX, Math.max(MARKER_PCT_MIN, n));
-      if (c !== n) markerPctInput.value = String(c);
-      return c;
+      if (!Number.isFinite(n) || n <= 0) return 67;
+      return n;
     }
 
     function getMarkerSizeFr() {
@@ -689,7 +686,6 @@
     });
 
     markerPctInput.addEventListener('change', () => {
-      getMarkerPctClamped();
       localStorage.setItem('psyche-qr-marker-pct', markerPctInput.value.trim());
       if (input.value.trim()) void regenerateAll();
     });
