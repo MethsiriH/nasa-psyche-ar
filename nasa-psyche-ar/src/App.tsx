@@ -1838,23 +1838,10 @@ const App = () => {
             }
 
             if (gameState === 'AR_MODE' && flatSurfaceModeRef.current) {
-                // Terrain-aware rover tilt: if we have a captured heightmap, sample its gradient
-                // at the rover's position and align "up" with that surface normal. Otherwise fall
-                // back to a flat (+Y) normal.
-                const hmOrient = terrainRef.current;
-                if (hmOrient) {
-                    const normal = sampleHeightmapNormal(
-                        hmOrient,
-                        px - flatSurfaceOffsetXRef.current,
-                        pz - flatSurfaceOffsetZRef.current,
-                        flatSurfaceRadiusRef.current,
-                    );
-                    // updateRoverRotation takes a "from origin" vector; pass the normal directly so
-                    // its internal .normalize() preserves it.
-                    updateRoverRotation(rover, normal.nx, normal.ny, normal.nz, moveDir.x, 0, moveDir.z);
-                } else {
-                    updateRoverRotation(rover, 0, 1, 0, moveDir.x, 0, moveDir.z);
-                }
+                // Flat AR: keep the rover level (+Y up in marker space) so the deck / top is always
+                // readable from a typical phone angle. Heightmap still drives Y; we do not pitch the
+                // body to match local terrain slope.
+                updateRoverRotation(rover, 0, 1, 0, moveDir.x, 0, moveDir.z);
             } else {
                 updateRoverRotation(rover, px, py, pz, moveDir.x, moveDir.y, moveDir.z);
             }
@@ -2396,14 +2383,8 @@ const App = () => {
                  * mode we use the camera-frame "up" as a sensible default forward direction.
                  */
                 if (gameState === 'AR_MODE' && flatSurfaceMode) {
-                    // Match the terrain slope at spawn so the rover doesn't T-pose into a hill.
-                    const hmInit2 = terrainRef.current;
-                    if (hmInit2) {
-                        const n = sampleHeightmapNormal(hmInit2, 0, 0, flatSurfaceRadius);
-                        updateRoverRotation(rover, n.nx, n.ny, n.nz, 0, 0, 1);
-                    } else {
-                        updateRoverRotation(rover, 0, 1, 0, 0, 0, 1);
-                    }
+                    // Level spawn: same +Y-up orientation as flat AR movement (roof visible).
+                    updateRoverRotation(rover, 0, 1, 0, 0, 0, 1);
                 } else {
                     const { up } = getCameraFrame(px, py, pz);
                     updateRoverRotation(rover, px, py, pz, up.x, up.y, up.z);
@@ -2502,19 +2483,7 @@ const App = () => {
                     const hasInput = Math.abs(ix) > 1e-6 || Math.abs(iy) > 1e-6;
                     const fx = hasInput ? ix : 0;
                     const fz = hasInput ? iy : 1;
-                    // Tilt to terrain slope at the idle spawn position when a heightmap exists.
-                    const hmIdle = terrainRef.current;
-                    if (hmIdle) {
-                        const n = sampleHeightmapNormal(
-                            hmIdle,
-                            px - flatSurfaceOffsetXRef.current,
-                            pz - flatSurfaceOffsetZRef.current,
-                            flatSurfaceRadiusRef.current,
-                        );
-                        updateRoverRotation(rover, n.nx, n.ny, n.nz, fx, 0, fz);
-                    } else {
-                        updateRoverRotation(rover, 0, 1, 0, fx, 0, fz);
-                    }
+                    updateRoverRotation(rover, 0, 1, 0, fx, 0, fz);
                 } else {
                     const { right, up } = getCameraFrame(px, py, pz);
                     const hasInput = Math.abs(ix) > 1e-6 || Math.abs(iy) > 1e-6;
