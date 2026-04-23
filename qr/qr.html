@@ -79,10 +79,6 @@
     }
     select { cursor: pointer; max-width: 100%; }
     input:focus, select:focus { border-color: #58a6ff; }
-    input[readonly] {
-      opacity: 0.92;
-      cursor: default;
-    }
 
     .btn-row {
       display: flex;
@@ -195,29 +191,24 @@
 </head>
 <body>
 
-  <h1>NASA Psyche AR &mdash; QR + marker sheets (surface markers 0, 2, 5, 7)</h1>
+  <h1>NASA Psyche AR &mdash; QR + marker sheets (1&ndash;4)</h1>
 
   <div class="instructions">
-    <strong>Sheet preset</strong>
-    <ul style="padding-left:1.1rem; margin-top:0.35rem;">
-      <li><strong>Split tile:</strong> marker <strong>top-left</strong>, QR <strong>bottom-right</strong> (marker block <strong>80%</strong> of sheet where the layout allows a scannable QR). Scan the <strong>QR</strong>, not the marker.</li>
-      <li>Sheets for surface markers <strong>0, 2, 5, 7</strong>. Game URL and marker image base are fixed for GitHub Pages below (edit the HTML constants to change deployment).</li>
-      <li>Optional <strong>sheet fill</strong> (checkbox): teal stipple in the empty split “wings”; soft fill under the QR.</li>
-    </ul>
+    <ol style="padding-left:1.25rem; margin:0; line-height:1.7;">
+      <li><strong>Game URL</strong> — Paste the full address of your deployed app (the link the QR code should open). Use <code>https://</code> and include a trailing slash if your host expects it.</li>
+      <li><strong>Marker images base</strong> — Paste the folder URL where the marker PNGs live (must end with <code>3x3_hamming_6_3/</code> on your server). Example: <code>https://&lt;user&gt;.github.io/nasa-psyche-ar/assets/3x3_hamming_6_3/</code></li>
+      <li>Click <strong>Regenerate all</strong>, then <strong>Print all sheets</strong> or use <strong>Save PNG</strong> on each card. Scan the <strong>QR</strong> only, not the marker. Empty split areas use the built-in background pattern automatically.</li>
+    </ol>
   </div>
 
   <div class="controls">
     <label class="row">
       Game URL
-      <input id="url-input" type="url" readonly autocomplete="off" spellcheck="false" />
+      <input id="url-input" type="url" autocomplete="off" spellcheck="false" />
     </label>
     <label class="row">
       Marker images base
-      <input id="asset-base" type="text" readonly spellcheck="false" />
-    </label>
-    <label class="row" style="flex-direction:row; align-items:center; gap:0.5rem;">
-      <input type="checkbox" id="sheet-decorate" checked style="width:auto;" />
-      <span>Fill empty sheet areas with a light design (split &amp; around layouts)</span>
+      <input id="asset-base" type="text" spellcheck="false" />
     </label>
     <div class="btn-row">
       <button type="button" id="btn-regen">Regenerate all</button>
@@ -229,8 +220,14 @@
   <div id="marker-grid" aria-live="polite"></div>
 
   <script>
-    const MARKER_IDS = [0, 2, 5, 7];
-    /** Fixed preset (edit here to change deployment). */
+    /** Sheet labels 1–4; id is the AR barcode image file (0.png, 2.png, …). */
+    const SURFACE_SHEETS = [
+      { id: 0, sheet: 1 },
+      { id: 2, sheet: 2 },
+      { id: 5, sheet: 3 },
+      { id: 7, sheet: 4 },
+    ];
+    /** Default URLs when fields are empty (edit for your fork). */
     const HARDCODED_GAME_URL = 'https://methsirih.github.io/nasa-psyche-ar/';
     const HARDCODED_ASSET_BASE = 'https://methsirih.github.io/nasa-psyche-ar/assets/3x3_hamming_6_3/';
     const HARDCODED_LAYOUT = 'split';
@@ -248,19 +245,10 @@
     const statusEl = document.getElementById('status');
     const btnRegen = document.getElementById('btn-regen');
     const btnPrint = document.getElementById('btn-print');
-    const sheetDecorate = document.getElementById('sheet-decorate');
 
-    input.value = HARDCODED_GAME_URL;
-    assetBaseInput.value = HARDCODED_ASSET_BASE.replace(/\/?$/, '/');
-
-    const savedDecorate = localStorage.getItem('psyche-qr-sheet-decorate');
-    if (savedDecorate === '0') sheetDecorate.checked = false;
-    else sheetDecorate.checked = true;
-
-    sheetDecorate.addEventListener('change', () => {
-      localStorage.setItem('psyche-qr-sheet-decorate', sheetDecorate.checked ? '1' : '0');
-      void regenerateAll();
-    });
+    input.value = localStorage.getItem('psyche-qr-url') || HARDCODED_GAME_URL;
+    assetBaseInput.value =
+      localStorage.getItem('psyche-qr-asset-base') || HARDCODED_ASSET_BASE.replace(/\/?$/, '/');
 
     function getMarkerPctClamped() {
       return HARDCODED_MARKER_PCT;
@@ -428,10 +416,6 @@
       ctx.restore();
     }
 
-    function shouldDecorateSheet() {
-      return sheetDecorate.checked;
-    }
-
     /** Split layout: top-right + bottom-left “wings” get bold fill; QR cell softer (under modules). */
     function drawPsycheSplitEmptyAreas(ctx, S, markerSide, seed) {
       const trW = S - markerSide;
@@ -504,7 +488,7 @@
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, S, S);
 
-      if (shouldDecorateSheet()) drawPsycheSplitEmptyAreas(ctx, S, markerSide, markerId * 7919 + 17);
+      drawPsycheSplitEmptyAreas(ctx, S, markerSide, markerId * 7919 + 17);
 
       ctx.drawImage(markerImg, 0, 0, markerSide, markerSide);
 
@@ -537,7 +521,7 @@
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, S, S);
 
-      if (shouldDecorateSheet()) drawPsycheAroundMargins(ctx, S, PAD, qrS, markerId * 7919 + 23);
+      drawPsycheAroundMargins(ctx, S, PAD, qrS, markerId * 7919 + 23);
 
       ctx.drawImage(qrBmp, PAD, PAD);
       ctx.drawImage(qrBmp, S - PAD - qrS, PAD);
@@ -582,23 +566,38 @@
     }
 
     async function regenerateAll() {
-      const url = HARDCODED_GAME_URL.trim();
-      const assetBase = HARDCODED_ASSET_BASE.trim().replace(/\/?$/, '/');
-      input.value = url;
-      assetBaseInput.value = assetBase;
+      const url = input.value.trim();
+      const assetBase = assetBaseInput.value.trim();
+      if (!url) {
+        setStatus('Step 1: enter the game URL above, then regenerate.');
+        grid.innerHTML = '';
+        btnPrint.disabled = true;
+        return;
+      }
+      if (!assetBase) {
+        setStatus('Step 2: enter the marker images base URL (folder with 0.png, 2.png, …), then regenerate.');
+        grid.innerHTML = '';
+        btnPrint.disabled = true;
+        return;
+      }
 
-      localStorage.setItem('psyche-qr-sheet-decorate', sheetDecorate.checked ? '1' : '0');
+      localStorage.setItem('psyche-qr-url', url);
+      localStorage.setItem('psyche-qr-asset-base', assetBaseInput.value.trim());
 
       grid.innerHTML = '';
       btnRegen.disabled = true;
       btnPrint.disabled = true;
       setStatus('Generating…');
 
-      for (const id of MARKER_IDS) {
+      for (const { id, sheet } of SURFACE_SHEETS) {
         const card = document.createElement('div');
         card.className = 'marker-card';
         card.dataset.markerId = String(id);
-        card.innerHTML = '<h2>Marker ' + id + '</h2><div class="composite-wrap"></div><button type="button" class="save-one">Save PNG</button>';
+        card.dataset.sheetIndex = String(sheet);
+        card.innerHTML =
+          '<h2>Marker ' +
+          sheet +
+          '</h2><div class="composite-wrap"></div><button type="button" class="save-one">Save PNG</button>';
         grid.appendChild(card);
         const wrap = card.querySelector('.composite-wrap');
         const saveBtn = card.querySelector('.save-one');
@@ -609,7 +608,7 @@
           saveBtn.onclick = () => {
             const a = document.createElement('a');
             a.href = canvas.toDataURL('image/png');
-            a.download = 'psyche-ar-qr-marker-' + id + '.png';
+            a.download = 'psyche-ar-qr-marker-' + sheet + '-id' + id + '.png';
             a.click();
           };
         } catch (e) {
@@ -620,8 +619,15 @@
 
       btnRegen.disabled = false;
       btnPrint.disabled = false;
-      setStatus('Done — split tile, marker ' + HARDCODED_MARKER_PCT + '% (max QR size enforced).');
+      setStatus('Done — four sheets (markers 1–4), split tile, ' + HARDCODED_MARKER_PCT + '% block.');
     }
+
+    input.addEventListener('change', () => {
+      if (input.value.trim()) localStorage.setItem('psyche-qr-url', input.value.trim());
+    });
+    assetBaseInput.addEventListener('change', () => {
+      localStorage.setItem('psyche-qr-asset-base', assetBaseInput.value.trim());
+    });
 
     btnRegen.addEventListener('click', () => void regenerateAll());
     btnPrint.addEventListener('click', () => window.print());
