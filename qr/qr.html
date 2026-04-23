@@ -152,6 +152,12 @@
       width: 100%;
     }
 
+    .marker-card--qr-only {
+      grid-column: 1 / -1;
+      max-width: 560px;
+      margin: 0 auto;
+    }
+
     .status {
       font-size: 0.8rem;
       color: #8b949e;
@@ -200,10 +206,13 @@
     <ol style="padding-left:1.25rem; margin:0; line-height:1.7;">
       <li><strong>Game URL</strong> — Paste the full address of your deployed app (the link the QR code should open). Use <code>https://</code> and include a trailing slash if your host expects it.</li>
       <li><strong>Marker images base</strong> — Paste the folder URL where the marker PNGs live (must end with <code>3x3_hamming_6_3/</code> on your server). Example: <code>https://&lt;user&gt;.github.io/nasa-psyche-ar/assets/3x3_hamming_6_3/</code></li>
-      <li>Click <strong>Regenerate all</strong> (sheets are generated at high pixel resolution), then <strong>Print all sheets</strong> or <strong>Save PNG</strong> per card. Scan the <strong>QR</strong> only, not the marker.</li>
+      <li>Click <strong>Regenerate all</strong> (sheets are generated at high pixel resolution), then <strong>Print all sheets</strong> or <strong>Save PNG</strong> per card. Scan the <strong>QR</strong> only, not the marker. A fifth row is <strong>QR only</strong> (same link, no AR marker) for handouts or labels.</li>
     </ol>
     <p style="margin:0.85rem 0 0; padding-top:0.85rem; border-top:1px solid #30363d; line-height:1.65;">
       <strong>Print at 2 in × 2 in (50.8 mm × 50.8 mm).</strong> The AR app expects the printed marker at about that physical size. In your print dialog choose <strong>100% / actual size</strong> (not &ldquo;fit to page&rdquo; if it shrinks the square). If you use <strong>Save PNG</strong>, open the file and set width and height to exactly <strong>2 inches</strong> (or set a custom paper / crop to a 2&Prime; square). Each browser print page here sizes the square to <strong>2&Prime; × 2&Prime;</strong> when you print from this page.
+    </p>
+    <p style="margin:0.65rem 0 0; line-height:1.65;">
+      <strong>Recommended print:</strong> use <strong>professional paper (~40 lb)</strong> and <strong>color printing</strong> so blacks, the QR, and any tint in the design stay crisp and consistent for scanning and AR tracking.
     </p>
   </div>
 
@@ -586,6 +595,25 @@
       return buildSheetSplit(url, markerId);
     }
 
+    /** Same pixel size as marker sheets; white margin, centered QR only (ECC H). */
+    async function buildQrOnlySheet(url) {
+      const S = SHEET_SIZE;
+      const margin = Math.round(100 * LAYOUT_SCALE);
+      const qrPx = Math.max(256, S - 2 * margin);
+      const qrBmp = await renderQrToCanvas(url, qrPx, QRCode.CorrectLevel.H);
+      const out = document.createElement('canvas');
+      out.width = S;
+      out.height = S;
+      const ctx = out.getContext('2d');
+      applyHighQualityCanvas(ctx);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, S, S);
+      const qx = (S - qrBmp.width) / 2;
+      const qy = (S - qrBmp.height) / 2;
+      ctx.drawImage(qrBmp, Math.round(qx), Math.round(qy));
+      return out;
+    }
+
     async function regenerateAll() {
       const url = input.value.trim();
       const assetBase = assetBaseInput.value.trim();
@@ -638,6 +666,27 @@
         }
       }
 
+      const qrCard = document.createElement('div');
+      qrCard.className = 'marker-card marker-card--qr-only';
+      qrCard.innerHTML =
+        '<h2>QR only (no marker)</h2><div class="composite-wrap"></div><button type="button" class="save-one">Save PNG</button>';
+      grid.appendChild(qrCard);
+      const qrWrap = qrCard.querySelector('.composite-wrap');
+      const qrSave = qrCard.querySelector('.save-one');
+      try {
+        const qrOnlyCanvas = await buildQrOnlySheet(url);
+        qrWrap.appendChild(qrOnlyCanvas);
+        qrSave.onclick = () => {
+          const a = document.createElement('a');
+          a.href = qrOnlyCanvas.toDataURL('image/png');
+          a.download = 'psyche-ar-qr-only.png';
+          a.click();
+        };
+      } catch (e) {
+        qrWrap.innerHTML = '<span class="err">' + (e.message || String(e)) + '</span>';
+        qrSave.disabled = true;
+      }
+
       btnRegen.disabled = false;
       btnPrint.disabled = false;
       setStatus(
@@ -645,9 +694,9 @@
           SHEET_SIZE +
           '×' +
           SHEET_SIZE +
-          ' px PNGs (markers 1–4), split tile, ' +
+          ' px: markers 1–4 (split, ' +
           HARDCODED_MARKER_PCT +
-          '% block. Print each square at 2″×2″.'
+          '%) + QR-only sheet. Print each square at 2″×2″.'
       );
     }
 
