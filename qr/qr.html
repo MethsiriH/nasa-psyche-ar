@@ -78,8 +78,11 @@
       outline: none;
     }
     select { cursor: pointer; max-width: 100%; }
-    input[type="number"]#marker-pct { max-width: 120px; width: 100%; }
     input:focus, select:focus { border-color: #58a6ff; }
+    input[readonly] {
+      opacity: 0.92;
+      cursor: default;
+    }
 
     .btn-row {
       display: flex;
@@ -192,39 +195,25 @@
 </head>
 <body>
 
-  <h1>NASA Psyche AR &mdash; QR + marker sheets (0&ndash;7)</h1>
+  <h1>NASA Psyche AR &mdash; QR + marker sheets (surface markers 0, 2, 5, 7)</h1>
 
   <div class="instructions">
-    <strong>Layouts</strong>
+    <strong>Sheet preset</strong>
     <ul style="padding-left:1.1rem; margin-top:0.35rem;">
-      <li><strong>Split tile (default):</strong> AR marker fills the <strong>top-left</strong> block; one full QR sits in the <strong>bottom-right</strong> block. They meet at a single inner corner (like a ⅔ + ⅓ split when marker % is 67). Scan the <strong>QR only</strong>.</li>
-      <li><strong>Around marker:</strong> marker centered; the same URL in <strong>four corner QRs</strong>.</li>
-      <li><strong>Overlay:</strong> one large QR with the marker drawn on top in the middle (limited % so it still scans).</li>
-      <li>Marker PNGs: <code>public/assets/3x3_hamming_6_3/{id}.png</code> (on Pages: <code>…/assets/3x3_hamming_6_3/</code>).</li>
-      <li>Optional <strong>sheet fill</strong> (checkbox below): <strong>top-right and bottom-left</strong> use a white field with a <strong>dark teal grid-dot</strong> pattern (seeded random ~45% of cells); the <strong>QR corner</strong> keeps a soft lavender fill under the code.</li>
+      <li><strong>Split tile:</strong> marker <strong>top-left</strong>, QR <strong>bottom-right</strong> (marker block <strong>80%</strong> of sheet where the layout allows a scannable QR). Scan the <strong>QR</strong>, not the marker.</li>
+      <li>Sheets for surface markers <strong>0, 2, 5, 7</strong>. Game URL and marker image base are fixed for GitHub Pages below (edit the HTML constants to change deployment).</li>
+      <li>Optional <strong>sheet fill</strong> (checkbox): teal stipple in the empty split “wings”; soft fill under the QR.</li>
     </ul>
   </div>
 
   <div class="controls">
     <label class="row">
-      Layout
-      <select id="layout-mode" aria-label="Layout mode">
-        <option value="split">Split tile — marker top-left, QR bottom-right</option>
-        <option value="around">Around marker — 4 corner QRs + center marker</option>
-        <option value="overlay">Overlay — one QR with marker on top</option>
-      </select>
-    </label>
-    <label class="row">
       Game URL
-      <input id="url-input" type="url" placeholder="https://methsirih.github.io/nasa-psyche-ar/" autocomplete="off" spellcheck="false" />
+      <input id="url-input" type="url" readonly autocomplete="off" spellcheck="false" />
     </label>
     <label class="row">
       Marker images base
-      <input id="asset-base" type="text" spellcheck="false" />
-    </label>
-    <label class="row">
-      <span id="marker-pct-label">Center marker (% of sheet)</span>
-      <input id="marker-pct" type="number" step="any" value="67" inputmode="decimal" />
+      <input id="asset-base" type="text" readonly spellcheck="false" />
     </label>
     <label class="row" style="flex-direction:row; align-items:center; gap:0.5rem;">
       <input type="checkbox" id="sheet-decorate" checked style="width:auto;" />
@@ -240,7 +229,12 @@
   <div id="marker-grid" aria-live="polite"></div>
 
   <script>
-    const MARKER_IDS = [0, 1, 2, 3, 4, 5, 6, 7];
+    const MARKER_IDS = [0, 2, 5, 7];
+    /** Fixed preset (edit here to change deployment). */
+    const HARDCODED_GAME_URL = 'https://methsirih.github.io/nasa-psyche-ar/';
+    const HARDCODED_ASSET_BASE = 'https://methsirih.github.io/nasa-psyche-ar/assets/3x3_hamming_6_3/';
+    const HARDCODED_LAYOUT = 'split';
+    const HARDCODED_MARKER_PCT = 80;
     const OVERLAY_QR_SIZE = 640;
     const SHEET_SIZE = 1000;
     const SHEET_PAD = 22;
@@ -250,68 +244,26 @@
 
     const input = document.getElementById('url-input');
     const assetBaseInput = document.getElementById('asset-base');
-    const layoutMode = document.getElementById('layout-mode');
-    const markerPctInput = document.getElementById('marker-pct');
-    const markerPctLabel = document.getElementById('marker-pct-label');
     const grid = document.getElementById('marker-grid');
     const statusEl = document.getElementById('status');
     const btnRegen = document.getElementById('btn-regen');
     const btnPrint = document.getElementById('btn-print');
     const sheetDecorate = document.getElementById('sheet-decorate');
 
-    function defaultAssetBase() {
-      try {
-        return new URL('../assets/3x3_hamming_6_3/', window.location.href).href;
-      } catch {
-        return '../assets/3x3_hamming_6_3/';
-      }
-    }
-
-    assetBaseInput.value = localStorage.getItem('psyche-qr-asset-base') || defaultAssetBase();
+    input.value = HARDCODED_GAME_URL;
+    assetBaseInput.value = HARDCODED_ASSET_BASE.replace(/\/?$/, '/');
 
     const savedDecorate = localStorage.getItem('psyche-qr-sheet-decorate');
     if (savedDecorate === '0') sheetDecorate.checked = false;
-    else if (savedDecorate === '1') sheetDecorate.checked = true;
-
-    const savedLayout = localStorage.getItem('psyche-qr-layout');
-    if (savedLayout === 'overlay' || savedLayout === 'around' || savedLayout === 'split') {
-      layoutMode.value = savedLayout;
-    } else {
-      layoutMode.value = 'split';
-    }
-
-    const savedPct = localStorage.getItem('psyche-qr-marker-pct');
-    if (savedPct != null && savedPct !== '') {
-      const n = parseFloat(savedPct);
-      if (Number.isFinite(n) && n > 0) markerPctInput.value = String(savedPct.trim());
-    }
-
-    function updateMarkerPctLabel() {
-      if (layoutMode.value === 'split') {
-        markerPctLabel.textContent = 'Marker block (% of sheet — rest is QR cell + margins)';
-      } else if (layoutMode.value === 'around') {
-        markerPctLabel.textContent = 'Center marker (% of sheet width)';
-      } else {
-        markerPctLabel.textContent = 'Marker size (% of QR width, center overlay)';
-      }
-    }
-
-    layoutMode.addEventListener('change', () => {
-      localStorage.setItem('psyche-qr-layout', layoutMode.value);
-      updateMarkerPctLabel();
-      if (input.value.trim()) void regenerateAll();
-    });
+    else sheetDecorate.checked = true;
 
     sheetDecorate.addEventListener('change', () => {
       localStorage.setItem('psyche-qr-sheet-decorate', sheetDecorate.checked ? '1' : '0');
-      if (input.value.trim()) void regenerateAll();
+      void regenerateAll();
     });
 
-    /** Positive % of sheet (split/around) or of QR width (overlay). No upper cap — split layout still enforces a minimum QR size internally. */
     function getMarkerPctClamped() {
-      const n = parseFloat(markerPctInput.value);
-      if (!Number.isFinite(n) || n <= 0) return 67;
-      return n;
+      return HARDCODED_MARKER_PCT;
     }
 
     function getMarkerSizeFr() {
@@ -624,24 +576,17 @@
     }
 
     async function buildSheet(url, markerId) {
-      if (layoutMode.value === 'overlay') return buildSheetOverlay(url, markerId);
-      if (layoutMode.value === 'around') return buildSheetAroundMarker(url, markerId);
+      if (HARDCODED_LAYOUT === 'overlay') return buildSheetOverlay(url, markerId);
+      if (HARDCODED_LAYOUT === 'around') return buildSheetAroundMarker(url, markerId);
       return buildSheetSplit(url, markerId);
     }
 
     async function regenerateAll() {
-      const url = input.value.trim();
-      if (!url) {
-        setStatus('Enter a game URL first.');
-        grid.innerHTML = '';
-        btnPrint.disabled = true;
-        return;
-      }
+      const url = HARDCODED_GAME_URL.trim();
+      const assetBase = HARDCODED_ASSET_BASE.trim().replace(/\/?$/, '/');
+      input.value = url;
+      assetBaseInput.value = assetBase;
 
-      localStorage.setItem('psyche-qr-url', url);
-      localStorage.setItem('psyche-qr-asset-base', assetBaseInput.value.trim());
-      localStorage.setItem('psyche-qr-marker-pct', markerPctInput.value.trim());
-      localStorage.setItem('psyche-qr-layout', layoutMode.value);
       localStorage.setItem('psyche-qr-sheet-decorate', sheetDecorate.checked ? '1' : '0');
 
       grid.innerHTML = '';
@@ -675,28 +620,12 @@
 
       btnRegen.disabled = false;
       btnPrint.disabled = false;
-      let mode = 'split tile (marker TL / QR BR)';
-      if (layoutMode.value === 'around') mode = '4-corner QRs + center marker';
-      else if (layoutMode.value === 'overlay') mode = 'overlay';
-      setStatus('Done — ' + mode + ', ' + markerPctInput.value + '%.');
+      setStatus('Done — split tile, marker ' + HARDCODED_MARKER_PCT + '% (max QR size enforced).');
     }
-
-    input.addEventListener('change', () => {
-      if (input.value.trim()) localStorage.setItem('psyche-qr-url', input.value.trim());
-    });
-
-    markerPctInput.addEventListener('change', () => {
-      localStorage.setItem('psyche-qr-marker-pct', markerPctInput.value.trim());
-      if (input.value.trim()) void regenerateAll();
-    });
 
     btnRegen.addEventListener('click', () => void regenerateAll());
     btnPrint.addEventListener('click', () => window.print());
 
-    const savedUrl = localStorage.getItem('psyche-qr-url');
-    if (savedUrl) input.value = savedUrl;
-
-    updateMarkerPctLabel();
     void regenerateAll();
   </script>
 </body>
